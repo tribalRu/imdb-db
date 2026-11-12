@@ -1,6 +1,8 @@
 # env
 env/
+.env
 backend/app/.env
+!backend/app/.env.example
 
 # pg
 data/

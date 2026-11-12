@@ -1,12 +1,12 @@
 """import interface"""
 
+import asyncio
 import logging
 from collections import defaultdict
-from os import environ
-from pathlib import Path
 from typing import Type
 
 import asyncpg
+import config
 from src.import_base import IngestDataset
 from src.import_name_basic import IngestNameBasics
 from src.import_title_akas import IngestTitleAkas
@@ -29,8 +29,19 @@ INGEST_BY_DATASET_NAME: dict[str, Type[IngestDataset]] = {
     ingest_class.DATASET_NAME: ingest_class for ingest_class in INGEST_CLASSES
 }
 SUPPORTED_DATASET_NAMES: tuple[str, ...] = tuple(INGEST_BY_DATASET_NAME.keys())
-CACHE_DIR = Path(environ["CACHE_DIR"])
-DATASET_TO_KEEP = environ.get("DATASET_TO_KEEP")
+CACHE_DIR = config.CACHE_DIR
+DATASET_TO_KEEP = config.DATASET_TO_KEEP
+
+_IMPORT_LOCK = asyncio.Lock()
+
+
+class ImportAlreadyRunningError(RuntimeError):
+    """Raised when a dataset import is requested while another one is running."""
+
+
+def is_import_running() -> bool:
+    """Return True while a dataset import is in progress."""
+    return _IMPORT_LOCK.locked()
 
 
 def resolve_datasets(
@@ -75,21 +86,26 @@ def clean_cache_dir():
             path.unlink()
 
 
-async def import_datasets(dataset_names: list[str] | None = None) -> None:
+async def import_datasets(dataset_names: list[str] | None = None, force: bool = False) -> None:
     """run all imports, or selected imports by dataset names"""
 
-    pool = await asyncpg.create_pool(dsn=environ["DATABASE_URL_SYNC"])
-    try:
-        selected_classes, selected_dataset_names = resolve_datasets(dataset_names)
+    selected_classes, selected_dataset_names = resolve_datasets(dataset_names)
 
-        logger.info(
-            "Starting dataset imports datasets=%s",
-            ", ".join(selected_dataset_names),
-        )
+    if _IMPORT_LOCK.locked():
+        raise ImportAlreadyRunningError("Another dataset import is already running.")
 
-        for ingest_class in selected_classes:
-            await ingest_class(pool=pool).run()
-    finally:
-        await pool.close()
+    async with _IMPORT_LOCK:
+        pool = await asyncpg.create_pool(dsn=config.DATABASE_URL_SYNC)
+        try:
+            logger.info(
+                "Starting dataset imports datasets=%s force=%s",
+                ", ".join(selected_dataset_names),
+                force,
+            )
+
+            for ingest_class in selected_classes:
+                await ingest_class(pool=pool, force=force).run()
+        finally:
+            await pool.close()
 
     clean_cache_dir()

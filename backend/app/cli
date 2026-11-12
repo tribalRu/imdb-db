@@ -48,15 +48,22 @@ def ingest(
             help=("Dataset filename filter. Repeat to run multiple ingests. " f"Options: {', '.join(DATASET_OPTIONS)}"),
         ),
     ] = None,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Re-import datasets even when a cached .tsv already exists."),
+    ] = False,
 ) -> None:
     """Run dataset ingestion.
 
     If no datasets are provided, all dataset ingests are run.
     """
-    from src.import_handler import import_datasets
+    from src.import_handler import ImportAlreadyRunningError, import_datasets
 
     try:
-        asyncio.run(import_datasets(dataset_names=dataset))
+        asyncio.run(import_datasets(dataset_names=dataset, force=force))
+    except ImportAlreadyRunningError as exc:
+        logger.error("%s", exc)
+        raise typer.Exit(code=1) from exc
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
 

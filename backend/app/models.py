@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import BigInteger, Column, DateTime
+from sqlalchemy import BigInteger, Column, DateTime, Index
 from sqlalchemy.dialects.postgresql import ARRAY, TEXT
 from sqlmodel import Field, Relationship, SQLModel
 
@@ -12,6 +12,21 @@ class Title(SQLModel, table=True):
     """titles"""
 
     __tablename__ = "titles"
+    __table_args__ = (
+        Index(
+            "ix_titles_primary_title_trgm",
+            "primary_title",
+            postgresql_using="gin",
+            postgresql_ops={"primary_title": "gin_trgm_ops"},
+        ),
+        Index(
+            "ix_titles_original_title_trgm",
+            "original_title",
+            postgresql_using="gin",
+            postgresql_ops={"original_title": "gin_trgm_ops"},
+        ),
+        Index("ix_titles_genres_gin", "genres", postgresql_using="gin"),
+    )
 
     tconst: str = Field(primary_key=True)
     title_type: str
@@ -38,6 +53,14 @@ class Person(SQLModel, table=True):
     """person people"""
 
     __tablename__ = "people"
+    __table_args__ = (
+        Index(
+            "ix_people_primary_name_trgm",
+            "primary_name",
+            postgresql_using="gin",
+            postgresql_ops={"primary_name": "gin_trgm_ops"},
+        ),
+    )
 
     nconst: str = Field(primary_key=True)
     primary_name: Optional[str]
@@ -57,7 +80,6 @@ class TitleRating(SQLModel, table=True):
     tconst: str = Field(
         foreign_key="titles.tconst",
         primary_key=True,
-        index=True,
     )
     average_rating: float
     num_votes: int
@@ -73,7 +95,6 @@ class Episode(SQLModel, table=True):
     tconst: str = Field(
         primary_key=True,
         foreign_key="titles.tconst",
-        index=True,
     )
     parent_tconst: str = Field(
         foreign_key="titles.tconst",
@@ -97,7 +118,6 @@ class TitleAka(SQLModel, table=True):
     title_id: str = Field(
         foreign_key="titles.tconst",
         primary_key=True,
-        index=True,
     )
     ordering: int = Field(primary_key=True)
 
@@ -120,7 +140,6 @@ class TitlePrincipal(SQLModel, table=True):
     tconst: str = Field(
         foreign_key="titles.tconst",
         primary_key=True,
-        index=True,
     )
     ordering: int = Field(primary_key=True)
 
@@ -129,7 +148,7 @@ class TitlePrincipal(SQLModel, table=True):
         index=True,
     )
 
-    category: str = Field(index=True)
+    category: str
     job: Optional[str] = None
     characters: Optional[list[str]] = Field(
         default=None,

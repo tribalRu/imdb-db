@@ -1,9 +1,9 @@
 """app dependencies"""
 
 import secrets
-from os import environ
 from typing import Annotated, AsyncGenerator
 
+import config
 from database import AsyncSessionLocal
 from fastapi import Header, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,7 +19,7 @@ async def verify_bearer_token(
     authorization: Annotated[str | None, Header()] = None,
 ) -> None:
     """Verify Authorization: Bearer <token> when API_TOKEN is configured."""
-    api_token = environ.get("API_TOKEN")
+    api_token = config.API_TOKEN
     if not api_token:
         return
 
@@ -38,7 +38,10 @@ async def verify_bearer_token(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if not secrets.compare_digest(provided_token, api_token):
+    if not secrets.compare_digest(
+        provided_token.encode("utf-8"),
+        api_token.encode("utf-8"),
+    ):
         raise HTTPException(
             status_code=401,
             detail="Invalid token",

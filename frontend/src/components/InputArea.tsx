@@ -51,6 +51,9 @@ export function InputArea({
                   onFieldChange(field.key, event.target.value)
                 }
                 placeholder={field.placeholder ?? ""}
+                type={field.type === "number" ? "number" : "text"}
+                step={field.type === "number" ? "any" : undefined}
+                inputMode={field.type === "number" ? "decimal" : undefined}
                 className="w-full border border-zinc-700 bg-panelSoft px-3 py-3 text-zinc-100 outline-none transition focus:border-amber-500"
               />
             </label>

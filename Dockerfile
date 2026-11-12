@@ -9,7 +9,6 @@ COPY frontend/index.html /frontend/index.html
 COPY frontend/src /frontend/src
 COPY frontend/tsconfig.json frontend/tsconfig.node.json /frontend/
 COPY frontend/vite.config.ts frontend/tailwind.config.ts /frontend/
-
 RUN npm run build
 
 FROM python:3.13.11-slim-trixie
@@ -32,7 +31,7 @@ ENV PATH="/applib/bin:$PATH"
 WORKDIR /app
 
 COPY backend/requirements.txt /requirements.txt
-RUN pip install -r /requirements.txt
+RUN pip install --no-cache-dir -r /requirements.txt
 
 COPY backend /app/backend
 COPY --from=frontend-builder /frontend/dist /app/frontend-dist

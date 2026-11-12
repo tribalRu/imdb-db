@@ -68,14 +68,10 @@ class IngestTitlePrincipals(IngestDataset):
             await self._create_secondary_indexes(conn)
 
     async def _drop_secondary_indexes(self, conn: asyncpg.Connection) -> None:
-        await conn.execute("DROP INDEX IF EXISTS ix_title_principals_tconst")
         await conn.execute("DROP INDEX IF EXISTS ix_title_principals_nconst")
-        await conn.execute("DROP INDEX IF EXISTS ix_title_principals_category")
 
     async def _create_secondary_indexes(self, conn: asyncpg.Connection) -> None:
-        await conn.execute("CREATE INDEX IF NOT EXISTS ix_title_principals_tconst ON title_principals (tconst)")
         await conn.execute("CREATE INDEX IF NOT EXISTS ix_title_principals_nconst ON title_principals (nconst)")
-        await conn.execute("CREATE INDEX IF NOT EXISTS ix_title_principals_category ON title_principals (category)")
 
     async def _upsert_existing(self, conn: asyncpg.Connection) -> None:
         await conn.execute(f"""

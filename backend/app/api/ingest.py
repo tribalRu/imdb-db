@@ -1,10 +1,11 @@
 """ingest trigger endpoint"""
 
+import asyncio
 import logging
-from os import environ
-from pathlib import Path
+import time
 from typing import Any
 
+import config
 from api.params import PaginationParams
 from dependencies import get_session
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
@@ -12,27 +13,34 @@ from models import ImportTask
 from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.import_handler import SUPPORTED_DATASET_NAMES, import_datasets, resolve_datasets
+from src.datasets import DATASET_TABLE_MAP
+from src.import_handler import (
+    SUPPORTED_DATASET_NAMES,
+    ImportAlreadyRunningError,
+    import_datasets,
+    is_import_running,
+    resolve_datasets,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["ingest"])
-INDEX_TABLES: tuple[str, ...] = (
-    "titles",
-    "people",
-    "title_ratings",
-    "episodes",
-    "title_akas",
-    "title_principals",
-)
-DATASET_TABLE_MAP: dict[str, str] = {
-    "title.basics.tsv": "titles",
-    "name.basics.tsv": "people",
-    "title.ratings.tsv": "title_ratings",
-    "title.episode.tsv": "episodes",
-    "title.akas.tsv": "title_akas",
-    "title.principals.tsv": "title_principals",
-}
+INDEX_TABLES: tuple[str, ...] = tuple(DATASET_TABLE_MAP.values())
+
+# Counting every row of the large tables takes over a second. The dashboard
+# does not need real-time numbers, so cache the result briefly and drop the
+# cache right after an import finishes.
+STATS_CACHE_TTL_SECONDS = 60.0
+_stats_cache: dict[str, Any] | None = None
+_stats_cache_at = 0.0
+_stats_lock = asyncio.Lock()
+
+
+def invalidate_stats_cache() -> None:
+    """forget the cached /api/stats response"""
+    global _stats_cache, _stats_cache_at
+    _stats_cache = None
+    _stats_cache_at = 0.0
 
 
 def _human_bytes(size_bytes: int) -> str:
@@ -50,14 +58,19 @@ class TriggerIngestRequest(BaseModel):
     """request model for import trigger"""
 
     data_set: list[str] | None = None
+    force: bool = False
 
 
-async def _run_ingest_task(dataset_names: list[str] | None) -> None:
+async def _run_ingest_task(dataset_names: list[str] | None, force: bool) -> None:
     """background task wrapper with logging"""
     try:
-        await import_datasets(dataset_names=dataset_names)
+        await import_datasets(dataset_names=dataset_names, force=force)
+    except ImportAlreadyRunningError:
+        logger.warning("dataset ingest skipped, another ingest is running datasets=%s", dataset_names)
     except Exception:  # pylint: disable=broad-exception-caught
-        logger.exception("dataset ingest task failed datasets=%s", dataset_names)
+        logger.exception("dataset ingest task failed datasets=%s force=%s", dataset_names, force)
+    finally:
+        invalidate_stats_cache()
 
 
 @router.post("/ingest")
@@ -67,6 +80,7 @@ async def trigger_ingest(
 ) -> dict[str, object]:
     """spawn ingest background task and return immediately"""
     dataset_names = payload.data_set if payload else None
+    force = payload.force if payload else False
 
     try:
         _, selected_dataset_names = resolve_datasets(dataset_names)
@@ -79,10 +93,17 @@ async def trigger_ingest(
             },
         ) from exc
 
-    background_tasks.add_task(_run_ingest_task, dataset_names)
+    if is_import_running():
+        raise HTTPException(
+            status_code=409,
+            detail="Another ingest is already running. Wait for it to finish or check /api/import-tasks.",
+        )
+
+    background_tasks.add_task(_run_ingest_task, dataset_names, force)
     return {
         "message": "Ingest task scheduled",
         "data_set": selected_dataset_names,
+        "force": force,
     }
 
 
@@ -94,7 +115,7 @@ async def list_import_tasks(
     """list paginated import task records"""
     stmt = (
         select(ImportTask)
-        .order_by(ImportTask.import_start_time)
+        .order_by(ImportTask.import_start_time.desc())
         .limit(params.size)
         .offset((params.page - 1) * params.size)
     )
@@ -110,11 +131,8 @@ async def list_import_tasks(
     ]
 
 
-@router.get("/stats")
-async def get_index_stats(
-    session: AsyncSession = Depends(get_session),
-) -> dict[str, Any]:
-    """dataset and index stats"""
+async def _collect_index_stats(session: AsyncSession) -> dict[str, Any]:
+    """compute dataset and index stats"""
     tasks_result = await session.execute(
         select(
             ImportTask.filename,
@@ -168,11 +186,9 @@ async def get_index_stats(
     db_size_bytes = int(db_size_result.scalar_one())
 
     cache_size_bytes = 0
-    cache_dir_raw = environ.get("CACHE_DIR")
-    if cache_dir_raw:
-        cache_dir = Path(cache_dir_raw)
-        if cache_dir.exists():
-            cache_size_bytes = sum(path.stat().st_size for path in cache_dir.rglob("*") if path.is_file())
+    cache_dir = config.CACHE_DIR
+    if cache_dir.exists():
+        cache_size_bytes = sum(path.stat().st_size for path in cache_dir.rglob("*") if path.is_file())
 
     return {
         "datasets": datasets,
@@ -189,3 +205,21 @@ async def get_index_stats(
         },
         "import_task_count": sum(dataset["runs"] for dataset in datasets if dataset.get("runs")),
     }
+
+
+@router.get("/stats")
+async def get_index_stats(
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """dataset and index stats (cached briefly)"""
+    global _stats_cache, _stats_cache_at
+
+    if _stats_cache is not None and time.monotonic() - _stats_cache_at < STATS_CACHE_TTL_SECONDS:
+        return _stats_cache
+
+    async with _stats_lock:
+        if _stats_cache is not None and time.monotonic() - _stats_cache_at < STATS_CACHE_TTL_SECONDS:
+            return _stats_cache
+        _stats_cache = await _collect_index_stats(session)
+        _stats_cache_at = time.monotonic()
+        return _stats_cache

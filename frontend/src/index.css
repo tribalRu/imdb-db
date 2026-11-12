@@ -3,7 +3,7 @@
 
 :root {
   color-scheme: dark;
-  font-family: "Space Grotesk", "Segoe UI", sans-serif;
+  font-family: system-ui, "Segoe UI", sans-serif;
 }
 
 html {

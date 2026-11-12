@@ -3,6 +3,10 @@ repos:
     rev: v6.0.0
     hooks:
       - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ["--maxkb=2048"]
   - repo: https://github.com/psf/black
     rev: 26.5.1
     hooks:
@@ -11,7 +15,7 @@ repos:
         files: ^backend/
         args: ["--line-length=120"]
   - repo: https://github.com/pycqa/isort
-    rev: 9.0.0b1
+    rev: 9.0.2
     hooks:
       - id: isort
         name: isort (python)
@@ -24,28 +28,23 @@ repos:
       - id: flake8
         alias: python
         files: ^backend/
-        args: [ "--max-complexity=12", "--max-line-length=120" ]
+        args: ["--max-complexity=12", "--max-line-length=120", "--extend-ignore=E203,W503"]
   - repo: https://github.com/codespell-project/codespell
     rev: v2.4.3
     hooks:
       - id: codespell
-  - repo: https://github.com/pre-commit/mirrors-eslint
-    rev: v10.8.0
+  - repo: local
     hooks:
-      - id: eslint
+      - id: eslint-frontend
         name: eslint-frontend
-        entry: npm run --prefix ./frontend lint
-        files: \.[jt]sx?$
-        types: [file]
-        language: node
+        entry: npm run --prefix ./frontend lint:fix
+        language: system
+        files: ^frontend/.*\.[jt]sx?$
         pass_filenames: false
-  - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: v4.0.0-alpha.8
-    hooks:
-      - id: prettier
+      - id: prettier-frontend
         name: prettier-frontend
         entry: npm run --prefix ./frontend format
-        language: node
+        language: system
         files: ^frontend/
         pass_filenames: false
 

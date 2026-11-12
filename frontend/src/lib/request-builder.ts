@@ -13,11 +13,14 @@ function normalizeFieldValue(
   const value = typeof rawValue === "string" ? rawValue.trim() : rawValue;
 
   if (field.type === "number") {
-    if (value === "") {
+    if (value === undefined || value === "") {
       return undefined;
     }
     const parsed = Number(value);
-    return Number.isNaN(parsed) ? undefined : parsed;
+    if (Number.isNaN(parsed)) {
+      throw new Error(`Field "${field.label}" must be a number.`);
+    }
+    return parsed;
   }
 
   if (field.type === "list") {

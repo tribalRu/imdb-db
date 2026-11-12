@@ -1,11 +1,15 @@
 services:
   imdb-api:
-    image: ghcr.io/bbilly1/imdb-db
+    image: ghcr.io/tribalru/imdb-db:local
+    build:
+      context: .
     container_name: "imdb-api"
     restart: "unless-stopped"
     environment:
       - DATABASE_URL=postgresql+asyncpg://imdb-db:secret123@imdb-postgres:5432/imdb-db
       - DATABASE_URL_SYNC=postgresql://imdb-db:secret123@imdb-postgres:5432/imdb-db
+      # - API_TOKEN=change-me
+      # - DATASET_TO_KEEP=2
     ports:
       - 127.0.0.1:8000:8000
     volumes:
@@ -13,8 +17,14 @@ services:
     depends_on:
       imdb-postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
   imdb-postgres:
-    image: postgres:17  
+    image: postgres:17
     container_name: "imdb-postgres"
     restart: "unless-stopped"
     expose:
@@ -23,8 +33,9 @@ services:
       - POSTGRES_USER=imdb-db
       - POSTGRES_PASSWORD=secret123
       - POSTGRES_DB=imdb-db
-    volumes:   
+    volumes:
       - ./data/volume/pg/data:/var/lib/postgresql/data/
+    shm_size: 1gb
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s

@@ -201,7 +201,6 @@ export const endpointConfigs: EndpointConfig[] = [
         in: "query",
         type: "number",
       },
-      ...paginationFields(),
     ],
   },
   {

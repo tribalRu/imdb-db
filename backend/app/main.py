@@ -1,6 +1,8 @@
-"""app entrypoing"""
+"""app entrypoint"""
 
 import logging
+from contextlib import asynccontextmanager
+from os import environ
 from pathlib import Path
 
 try:
@@ -14,8 +16,7 @@ try:
 except ModuleNotFoundError:
     pass
 
-from os import environ
-
+import config
 from api.ingest import router as ingest_router
 from api.people import router as people_router
 from api.search import router as search_router
@@ -23,6 +24,7 @@ from api.series import router as series_router
 from api.titles import router as titles_router
 from dependencies import verify_bearer_token
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
 logging.basicConfig(
@@ -34,25 +36,29 @@ logging.getLogger().setLevel(logging.INFO)
 git_tag = environ.get("GIT_TAG", "dev")
 git_commit = environ.get("GIT_COMMIT", "unknown")
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """startup checks"""
+    config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    yield
+
+
 app = FastAPI(
     title="IMDb Read-Only API",
     version=git_tag,
     description=f"build tag={git_tag} commit={git_commit}",
+    lifespan=lifespan,
 )
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-FRONTEND_DIST = Path("/app/frontend-dist")
+FRONTEND_DIST = config.FRONTEND_DIST
 
 app.include_router(titles_router, dependencies=[Depends(verify_bearer_token)])
 app.include_router(series_router, dependencies=[Depends(verify_bearer_token)])
 app.include_router(people_router, dependencies=[Depends(verify_bearer_token)])
 app.include_router(search_router, dependencies=[Depends(verify_bearer_token)])
 app.include_router(ingest_router, dependencies=[Depends(verify_bearer_token)])
-
-
-@app.on_event("startup")
-async def on_startup() -> None:
-    """startup checks"""
-    Path(environ["CACHE_DIR"]).mkdir(parents=True, exist_ok=True)
 
 
 @app.get("/api")
@@ -62,7 +68,7 @@ async def api_is_up():
         "ping": "pong",
         "git_tag": git_tag,
         "git_commit": git_commit,
-        "has_auth": bool(environ.get("API_TOKEN")),
+        "has_auth": bool(config.API_TOKEN),
     }
 
 

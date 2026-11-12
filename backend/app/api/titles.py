@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/api", tags=["titles"])
+MAX_TCONST_FILTER = 500
 
 
 @router.get("/titles")
@@ -22,16 +23,22 @@ async def list_titles(
     stmt = select(Title, TitleRating).outerjoin(TitleRating, TitleRating.tconst == Title.tconst)
 
     if tconst:
+        if len(tconst) > MAX_TCONST_FILTER:
+            raise HTTPException(
+                status_code=400,
+                detail=f"tconst accepts at most {MAX_TCONST_FILTER} values.",
+            )
         stmt = stmt.where(Title.tconst.in_(tconst))  # type: ignore  # pylint: disable=no-member
     if params.genre:
         stmt = stmt.where(Title.genres.any(params.genre))  # type: ignore  # pylint: disable=no-member
-    if params.year_from and Title.start_year:
+    if params.year_from:
         stmt = stmt.where(Title.start_year >= params.year_from)
     if params.title_type:
         stmt = stmt.where(Title.title_type == params.title_type)
     if params.min_rating is not None:
         stmt = stmt.where(TitleRating.average_rating >= params.min_rating)
 
+    stmt = stmt.order_by(Title.tconst)
     stmt = stmt.limit(params.size).offset((params.page - 1) * params.size)
     result = await session.execute(stmt)
     payloads: list[dict[str, Any]] = []

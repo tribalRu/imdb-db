@@ -3,6 +3,7 @@ name: CI Push Pipeline
 on:
   push:
     branches:
+      - develop
       - master
 
 permissions:

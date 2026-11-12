@@ -7,15 +7,16 @@ import shutil
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from io import BytesIO
-from os import environ
 from pathlib import Path
 from time import perf_counter
 from typing import AsyncIterator, ClassVar, cast
 
 import aiohttp
 import asyncpg
+import config
 from database import AsyncSessionLocal
 from models import ImportTask
+from src.datasets import DATASET_TABLE_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -27,15 +28,16 @@ class IngestDataset(ABC):
 
     CHUNK_SIZE_LINES = 100_000
     BASE_URL = "https://datasets.imdbws.com"
-    CACHE_DIR = environ["CACHE_DIR"]
+    CACHE_DIR = config.CACHE_DIR
     DATASET_NAME: ClassVar[str] = ""
 
-    def __init__(self, pool: asyncpg.Pool):
+    def __init__(self, pool: asyncpg.Pool, force: bool = False):
         if not self.DATASET_NAME:
             raise NotImplementedError(f"{self.__class__.__name__} must define DATASET_NAME")
 
         self.dataset_name = self.DATASET_NAME
         self.pool = pool
+        self.force = force
         self.iso_date = datetime.now().date().isoformat()
 
     @property
@@ -77,8 +79,8 @@ class IngestDataset(ABC):
 
     async def run(self) -> None:
         """run download and import"""
-        if self.tsv_path.exists():
-            logger.info("skip, already imported, dataset=%s", self.dataset_name)
+        if self.tsv_path.exists() and not self.force:
+            logger.info("skip, already imported, dataset=%s (use force to re-import)", self.dataset_name)
             return
 
         import_start_time = datetime.now(timezone.utc)
@@ -86,7 +88,7 @@ class IngestDataset(ABC):
 
         logger.info("import started dataset=%s", self.dataset_name)
         await self._download_if_needed()
-        self._extract_if_needed()
+        await asyncio.to_thread(self._extract_if_needed)
 
         async with self.pool.acquire() as conn:
             db_conn = cast(asyncpg.Connection, conn)
@@ -101,6 +103,11 @@ class IngestDataset(ABC):
                 await db_conn.execute(f"ANALYZE {self.staging_table}")
                 logger.info("merge temporary table into final table")
                 await self.merge_into_final(db_conn)
+
+            target_table = DATASET_TABLE_MAP.get(self.dataset_name)
+            if target_table:
+                logger.info("analyze final table table=%s", target_table)
+                await db_conn.execute(f"ANALYZE {target_table}")
 
         await self._record_import_task(
             import_start_time=import_start_time,
@@ -124,12 +131,21 @@ class IngestDataset(ABC):
             return
 
         logger.info("download dataset to gz_path=%s", self.gz_path)
-        async with aiohttp.ClientSession() as session:
-            async with session.get(self.url) as resp:
-                resp.raise_for_status()
-                with open(self.gz_path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(1024 * 1024):
-                        f.write(chunk)
+        partial_path = self.gz_path.with_suffix(f"{self.gz_path.suffix}.part")
+        partial_path.unlink(missing_ok=True)
+
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=300)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(self.url) as resp:
+                    resp.raise_for_status()
+                    with open(partial_path, "wb") as f:
+                        async for chunk in resp.content.iter_chunked(1024 * 1024):
+                            f.write(chunk)
+            partial_path.replace(self.gz_path)
+        except Exception:
+            partial_path.unlink(missing_ok=True)
+            raise
 
     def _extract_if_needed(self) -> None:
         """extract if not extracted"""

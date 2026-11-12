@@ -31,7 +31,9 @@ if config.config_file_name is not None:
 
 database_url = os.getenv("DATABASE_URL_SYNC")
 if not database_url:
-    raise RuntimeError("DATABASE_URL_SYNC environment variable is not set")
+    from app.config import DATABASE_URL_SYNC
+
+    database_url = DATABASE_URL_SYNC
 
 config.set_main_option("sqlalchemy.url", database_url)
 

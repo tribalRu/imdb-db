@@ -1,9 +1,8 @@
 """unit tests for the pure parts of the codebase"""
 
 import pytest
-from fastapi import HTTPException
-
 from api.search import _normalized_query
+from fastapi import HTTPException
 from src.datasets import DATASET_TABLE_MAP
 from src.import_handler import (
     INGEST_BY_DATASET_NAME,

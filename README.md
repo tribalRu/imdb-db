@@ -164,6 +164,17 @@ npm run dev
 
 `devstart.sh` also provides a tmux-based local dev workflow.
 
+## Tests
+
+```bash
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+python -m pytest backend/tests -q
+```
+
+The suite covers dataset resolution, cache cleanup and search input handling,
+and runs in CI without a database.
+
 ## Deployment without Docker
 
 Docker is not required. The application is a normal FastAPI process plus a

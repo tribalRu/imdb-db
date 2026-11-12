@@ -72,6 +72,12 @@ async def api_is_up():
     }
 
 
+@app.get("/health")
+async def health():
+    """liveness probe (point external monitors here, not at /api)"""
+    return {"status": "ok"}
+
+
 if FRONTEND_DIST.exists():
     app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
     logging.getLogger(__name__).info("serving frontend from %s", FRONTEND_DIST)

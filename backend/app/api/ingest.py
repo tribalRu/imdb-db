@@ -141,7 +141,9 @@ async def _collect_index_stats(session: AsyncSession) -> dict[str, Any]:
             func.sum(ImportTask.size_compressed).label("size_compressed_total"),
             func.sum(ImportTask.size_raw).label("size_raw_total"),
             func.avg(ImportTask.duration).label("avg_duration"),
-        ).group_by(ImportTask.filename)
+        )
+        .where(ImportTask.status == "completed")
+        .group_by(ImportTask.filename)
     )
     task_rows = tasks_result.all()
     task_stats_by_filename = {

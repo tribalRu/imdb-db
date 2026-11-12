@@ -85,34 +85,44 @@ class IngestDataset(ABC):
 
         import_start_time = datetime.now(timezone.utc)
         start = perf_counter()
+        import_task_id = await self._start_import_task(import_start_time)
 
-        logger.info("import started dataset=%s", self.dataset_name)
-        await self._download_if_needed()
-        await asyncio.to_thread(self._extract_if_needed)
+        try:
+            logger.info("import started dataset=%s", self.dataset_name)
+            await self._download_if_needed()
+            await asyncio.to_thread(self._extract_if_needed)
 
-        async with self.pool.acquire() as conn:
-            db_conn = cast(asyncpg.Connection, conn)
-            async with conn.transaction():
-                await db_conn.execute("SET LOCAL synchronous_commit = off")
-                logger.info("ingest into temporary table staging_table=%s", self.staging_table)
-                await self.create_staging_table(db_conn)
+            async with self.pool.acquire() as conn:
+                db_conn = cast(asyncpg.Connection, conn)
+                async with conn.transaction():
+                    await db_conn.execute("SET LOCAL synchronous_commit = off")
+                    logger.info("ingest into temporary table staging_table=%s", self.staging_table)
+                    await self.create_staging_table(db_conn)
 
-                async for lines in self._read_tsv_in_chunks():
-                    await self.copy_chunk(db_conn, lines)
+                    async for lines in self._read_tsv_in_chunks():
+                        await self.copy_chunk(db_conn, lines)
 
-                await db_conn.execute(f"ANALYZE {self.staging_table}")
-                logger.info("merge temporary table into final table")
-                await self.merge_into_final(db_conn)
+                    await db_conn.execute(f"ANALYZE {self.staging_table}")
+                    logger.info("merge temporary table into final table")
+                    await self.merge_into_final(db_conn)
 
-            target_table = DATASET_TABLE_MAP.get(self.dataset_name)
-            if target_table:
-                logger.info("analyze final table table=%s", target_table)
-                await db_conn.execute(f"ANALYZE {target_table}")
+                target_table = DATASET_TABLE_MAP.get(self.dataset_name)
+                if target_table:
+                    logger.info("analyze final table table=%s", target_table)
+                    await db_conn.execute(f"ANALYZE {target_table}")
 
-        await self._record_import_task(
-            import_start_time=import_start_time,
-            duration=perf_counter() - start,
-        )
+            await self._finish_import_task(
+                import_task_id,
+                duration=perf_counter() - start,
+                status="completed",
+            )
+        except Exception:
+            await self._finish_import_task(
+                import_task_id,
+                duration=perf_counter() - start,
+                status="failed",
+            )
+            raise
 
         logger.info(
             "import completed dataset=%s size_compressed=%s size_raw=%s duration=%.3fs",
@@ -157,21 +167,36 @@ class IngestDataset(ABC):
             with open(self.tsv_path, "wb") as out:
                 shutil.copyfileobj(gz, out)
 
-    async def _record_import_task(
-        self,
-        import_start_time: datetime,
-        duration: float,
-    ) -> None:
-        """Persist one import task row for this dataset processing run."""
+    async def _start_import_task(self, import_start_time: datetime) -> int:
+        """Persist a running task row so progress is visible while importing."""
         import_task = ImportTask(
             filename=self.dataset_name,
-            size_compressed=self.gz_size,
-            size_raw=self.tsv_size,
+            size_compressed=0,
+            size_raw=0,
             import_start_time=import_start_time,
-            duration=duration,
+            duration=0.0,
+            status="running",
         )
         async with AsyncSessionLocal() as session:
             session.add(import_task)
+            await session.commit()
+            await session.refresh(import_task)
+
+        if import_task.id is None:
+            raise RuntimeError("failed to create import task")
+        return int(import_task.id)
+
+    async def _finish_import_task(self, task_id: int, duration: float, status: str) -> None:
+        """Update the task row with final sizes and status."""
+        async with AsyncSessionLocal() as session:
+            import_task = await session.get(ImportTask, task_id)
+            if import_task is None:
+                logger.warning("import task disappeared task_id=%s", task_id)
+                return
+            import_task.size_compressed = self.gz_size
+            import_task.size_raw = self.tsv_size
+            import_task.duration = duration
+            import_task.status = status
             await session.commit()
 
     async def _read_tsv_in_chunks(self) -> AsyncIterator[list[str]]:

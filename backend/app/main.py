@@ -1,5 +1,6 @@
 """app entrypoint"""
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from os import environ
@@ -18,6 +19,7 @@ except ModuleNotFoundError:
 
 import config
 from api.ingest import router as ingest_router
+from api.ingest import warm_stats_cache
 from api.people import router as people_router
 from api.search import router as search_router
 from api.series import router as series_router
@@ -37,11 +39,24 @@ git_tag = environ.get("GIT_TAG", "dev")
 git_commit = environ.get("GIT_COMMIT", "unknown")
 
 
+async def _warm_stats() -> None:
+    """fill the stats cache in the background so the first request is fast"""
+    try:
+        await warm_stats_cache()
+    except Exception:  # pylint: disable=broad-exception-caught
+        logging.getLogger(__name__).warning("stats warm-up failed", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     """startup checks"""
     config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    yield
+    warm_task = asyncio.create_task(_warm_stats())
+    try:
+        yield
+    finally:
+        if not warm_task.done():
+            warm_task.cancel()
 
 
 app = FastAPI(

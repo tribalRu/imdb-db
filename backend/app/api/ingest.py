@@ -7,6 +7,7 @@ from typing import Any
 
 import config
 from api.params import PaginationParams
+from database import AsyncSessionLocal
 from dependencies import get_session
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
 from models import ImportTask
@@ -226,3 +227,15 @@ async def get_index_stats(
         _stats_cache = await _collect_index_stats(session)
         _stats_cache_at = time.monotonic()
         return _stats_cache
+
+
+async def warm_stats_cache() -> None:
+    """pre-fill the stats cache in the background (called at startup)"""
+    global _stats_cache, _stats_cache_at
+
+    async with _stats_lock:
+        if _stats_cache is not None:
+            return
+        async with AsyncSessionLocal() as session:
+            _stats_cache = await _collect_index_stats(session)
+            _stats_cache_at = time.monotonic()

@@ -92,6 +92,7 @@ The docs are available at `/docs` or at `/openapi.json`.
 Available endpoints:
 
 - `/` React frontend
+- `GET /health`
 - `GET /api`
 - `POST /api/ingest`
 - `GET /api/import-tasks`

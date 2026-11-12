@@ -175,6 +175,18 @@ python -m pytest backend/tests -q
 The suite covers dataset resolution, cache cleanup and search input handling,
 and runs in CI without a database.
 
+There are also integration tests that exercise the API against a disposable
+Postgres database (skipped by default):
+
+```bash
+psql -U postgres -c "CREATE DATABASE \"imdb-db-test\" OWNER \"imdb-db\";"
+export TEST_DATABASE_URL="postgresql+asyncpg://imdb-db:secret123@localhost:5432/imdb-db-test"
+python -m pytest backend/tests -q
+```
+
+The fixture drops and recreates the schema, so never point `TEST_DATABASE_URL`
+at a database with real data.
+
 ## Deployment without Docker
 
 Docker is not required. The application is a normal FastAPI process plus a

@@ -4,7 +4,7 @@ from typing import Any
 
 from api.params import SearchParams
 from dependencies import get_session
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from models import Person, Title
 from sqlalchemy import ColumnElement, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +16,17 @@ router = APIRouter(prefix="/api/search", tags=["search"])
 # indexes instead of walking the whole primary-key index in tconst order.
 # Above the limit an ordered primary-key scan is cheaper, so we fall back to it.
 SELECTIVE_MATCH_LIMIT = 1000
+
+
+def _normalized_query(params: SearchParams) -> str:
+    """return the trimmed query, or reject a blank one"""
+    q = params.q.strip()
+    if not q:
+        raise HTTPException(
+            status_code=422,
+            detail="q must contain at least one non-whitespace character",
+        )
+    return q
 
 
 async def _search_paginated(
@@ -48,7 +59,7 @@ async def search_titles(
     session: AsyncSession = Depends(get_session),
 ) -> list[Title]:
     """search titles"""
-    like = f"%{params.q}%"
+    like = f"%{_normalized_query(params)}%"
     conditions: list[ColumnElement[bool]] = [
         or_(
             Title.primary_title.ilike(like),  # type: ignore
@@ -69,7 +80,7 @@ async def search_people(
     session: AsyncSession = Depends(get_session),
 ) -> list[Person]:
     """search people"""
-    like = f"%{params.q}%"
+    like = f"%{_normalized_query(params)}%"
     conditions: list[ColumnElement[bool]] = [Person.primary_name.ilike(like)]  # type: ignore
 
     return await _search_paginated(session, Person, Person.nconst, conditions, params)

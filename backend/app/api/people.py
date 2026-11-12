@@ -6,13 +6,14 @@ from api.params import CategoryParams
 from dependencies import get_session
 from fastapi import APIRouter, Depends, HTTPException
 from models import Person, Title, TitlePrincipal
+from schemas import CreditItem, PersonDetail
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/api", tags=["people"])
 
 
-@router.get("/people/{nconst}")
+@router.get("/people/{nconst}", response_model=PersonDetail)
 async def get_person(
     nconst: str,
     session: AsyncSession = Depends(get_session),
@@ -36,7 +37,7 @@ async def get_person(
     return payload
 
 
-@router.get("/people/{nconst}/credits")
+@router.get("/people/{nconst}/credits", response_model=list[CreditItem])
 async def list_person_credits(
     nconst: str,
     params: CategoryParams = Depends(),

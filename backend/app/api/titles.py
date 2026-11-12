@@ -6,6 +6,7 @@ from api.params import CategoryParams, ListTitlesParams
 from dependencies import get_session
 from fastapi import APIRouter, Depends, HTTPException, Query
 from models import Person, Title, TitlePrincipal, TitleRating
+from schemas import TitlePrincipalOut, TitleWithRating
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,7 +14,7 @@ router = APIRouter(prefix="/api", tags=["titles"])
 MAX_TCONST_FILTER = 500
 
 
-@router.get("/titles")
+@router.get("/titles", response_model=list[TitleWithRating])
 async def list_titles(
     params: ListTitlesParams = Depends(),
     tconst: Annotated[list[str] | None, Query()] = None,
@@ -56,7 +57,7 @@ async def list_titles(
     return payloads
 
 
-@router.get("/titles/{tconst}")
+@router.get("/titles/{tconst}", response_model=TitleWithRating)
 async def get_title(
     tconst: str,
     session: AsyncSession = Depends(get_session),
@@ -83,7 +84,7 @@ async def get_title(
     return payload
 
 
-@router.get("/titles/{tconst}/principals")
+@router.get("/titles/{tconst}/principals", response_model=list[TitlePrincipalOut])
 async def list_title_principals(
     tconst: str,
     params: CategoryParams = Depends(),

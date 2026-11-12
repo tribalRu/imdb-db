@@ -42,7 +42,7 @@ async def _search_paginated(
     return list((await session.execute(stmt)).scalars().all())
 
 
-@router.get("/titles")
+@router.get("/titles", response_model=list[Title])
 async def search_titles(
     params: SearchParams = Depends(),
     session: AsyncSession = Depends(get_session),
@@ -63,7 +63,7 @@ async def search_titles(
     return await _search_paginated(session, Title, Title.tconst, conditions, params)
 
 
-@router.get("/people")
+@router.get("/people", response_model=list[Person])
 async def search_people(
     params: SearchParams = Depends(),
     session: AsyncSession = Depends(get_session),

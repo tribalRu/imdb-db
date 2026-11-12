@@ -11,6 +11,7 @@ from dependencies import get_session
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
 from models import ImportTask
 from pydantic import BaseModel
+from schemas import ImportTaskOut, StatsResponse, TriggerIngestResponse
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.datasets import DATASET_TABLE_MAP
@@ -73,7 +74,7 @@ async def _run_ingest_task(dataset_names: list[str] | None, force: bool) -> None
         invalidate_stats_cache()
 
 
-@router.post("/ingest")
+@router.post("/ingest", response_model=TriggerIngestResponse)
 async def trigger_ingest(
     background_tasks: BackgroundTasks,
     payload: TriggerIngestRequest | None = Body(default=None),
@@ -107,7 +108,7 @@ async def trigger_ingest(
     }
 
 
-@router.get("/import-tasks")
+@router.get("/import-tasks", response_model=list[ImportTaskOut])
 async def list_import_tasks(
     params: PaginationParams = Depends(),
     session: AsyncSession = Depends(get_session),
@@ -209,7 +210,7 @@ async def _collect_index_stats(session: AsyncSession) -> dict[str, Any]:
     }
 
 
-@router.get("/stats")
+@router.get("/stats", response_model=StatsResponse)
 async def get_index_stats(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:

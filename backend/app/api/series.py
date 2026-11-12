@@ -6,13 +6,14 @@ from api.params import ListSeriesEpisodesParams
 from dependencies import get_session
 from fastapi import APIRouter, Depends, HTTPException
 from models import Episode, Title, TitleRating
+from schemas import EpisodeOut
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/api", tags=["series"])
 
 
-@router.get("/series/{tconst}/episodes")
+@router.get("/series/{tconst}/episodes", response_model=list[EpisodeOut])
 async def list_series_episodes(
     tconst: str,
     params: ListSeriesEpisodesParams = Depends(),

@@ -1,6 +1,6 @@
 """shared API query parameter models"""
 
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 
 from fastapi import Query
 from pydantic import BaseModel
@@ -9,6 +9,10 @@ from pydantic import BaseModel
 class PaginationParams(BaseModel):
     page: Annotated[int, Query(default=1, ge=1)]
     size: Annotated[int, Query(default=50, ge=1, le=500)]
+
+
+class ImportTaskParams(PaginationParams):
+    status: Annotated[Optional[Literal["running", "completed", "failed"]], Query(default=None)]
 
 
 class CategoryParams(PaginationParams):

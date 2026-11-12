@@ -11,6 +11,7 @@ explicitly. Never use a database that holds real data.
 """
 
 import os
+from datetime import datetime, timezone
 
 import pytest
 
@@ -76,6 +77,26 @@ def client():
                 characters=["Someone"],
             )
         )
+        session.add(
+            models.ImportTask(
+                filename="name.basics.tsv",
+                size_compressed=0,
+                size_raw=0,
+                import_start_time=datetime.now(timezone.utc),
+                duration=0.0,
+                status="running",
+            )
+        )
+        session.add(
+            models.ImportTask(
+                filename="title.basics.tsv",
+                size_compressed=100,
+                size_raw=200,
+                import_start_time=datetime.now(timezone.utc),
+                duration=12.5,
+                status="completed",
+            )
+        )
         session.commit()
 
     from fastapi.testclient import TestClient
@@ -139,3 +160,27 @@ def test_people_credits(client):
     credits = resp.json()
     assert credits[0]["tconst"] == TITLE_ID
     assert credits[0]["category"] == "actor"
+
+
+def test_import_tasks_filter_by_status(client):
+    resp = client.get("/api/import-tasks", params={"status": "running"})
+    assert resp.status_code == 200
+    items = resp.json()
+    assert items
+    assert all(item["status"] == "running" for item in items)
+    assert items[0]["filename"] == "name.basics.tsv"
+
+
+def test_import_tasks_reject_unknown_status(client):
+    resp = client.get("/api/import-tasks", params={"status": "bogus"})
+    assert resp.status_code == 422
+
+
+def test_stats_only_counts_completed_imports(client):
+    resp = client.get("/api/stats")
+    assert resp.status_code == 200
+    datasets = {dataset["dataset_name"]: dataset for dataset in resp.json()["datasets"]}
+    assert datasets["title.basics.tsv"]["runs"] == 1
+    # a running import must not be counted anywhere
+    assert datasets["name.basics.tsv"]["runs"] is None
+    assert datasets["name.basics.tsv"]["indexed"] is False

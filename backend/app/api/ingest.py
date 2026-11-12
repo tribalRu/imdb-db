@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 import config
-from api.params import PaginationParams
+from api.params import ImportTaskParams
 from database import AsyncSessionLocal
 from dependencies import get_session
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
@@ -111,16 +111,14 @@ async def trigger_ingest(
 
 @router.get("/import-tasks", response_model=list[ImportTaskOut])
 async def list_import_tasks(
-    params: PaginationParams = Depends(),
+    params: ImportTaskParams = Depends(),
     session: AsyncSession = Depends(get_session),
 ) -> list[dict[str, Any]]:
     """list paginated import task records"""
-    stmt = (
-        select(ImportTask)
-        .order_by(ImportTask.import_start_time.desc())
-        .limit(params.size)
-        .offset((params.page - 1) * params.size)
-    )
+    stmt = select(ImportTask)
+    if params.status:
+        stmt = stmt.where(ImportTask.status == params.status)
+    stmt = stmt.order_by(ImportTask.import_start_time.desc()).limit(params.size).offset((params.page - 1) * params.size)
     result = await session.execute(stmt)
     tasks = list(result.scalars().all())
     return [

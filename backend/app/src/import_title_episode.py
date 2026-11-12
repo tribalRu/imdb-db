@@ -43,12 +43,8 @@ class IngestTitleEpisodes(IngestDataset):
                 e.season_number,
                 e.episode_number
             FROM {self.staging_table} e
-            WHERE EXISTS (
-                SELECT 1 FROM titles t WHERE t.tconst = e.tconst
-            )
-            AND EXISTS (
-                SELECT 1 FROM titles p WHERE p.tconst = e.parent_tconst
-            )
+            JOIN titles t ON t.tconst = e.tconst
+            JOIN titles p ON p.tconst = e.parent_tconst
             """)
 
     async def _upsert_existing(self, conn: asyncpg.Connection) -> None:
@@ -65,12 +61,8 @@ class IngestTitleEpisodes(IngestDataset):
                 e.season_number,
                 e.episode_number
             FROM {self.staging_table} e
-            WHERE EXISTS (
-                SELECT 1 FROM titles t WHERE t.tconst = e.tconst
-            )
-            AND EXISTS (
-                SELECT 1 FROM titles p WHERE p.tconst = e.parent_tconst
-            )
+            JOIN titles t ON t.tconst = e.tconst
+            JOIN titles p ON p.tconst = e.parent_tconst
             ON CONFLICT (tconst) DO UPDATE
             SET
                 parent_tconst = EXCLUDED.parent_tconst,

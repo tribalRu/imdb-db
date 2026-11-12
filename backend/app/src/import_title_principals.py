@@ -57,12 +57,8 @@ class IngestTitlePrincipals(IngestDataset):
                         )
                     END
                 FROM {self.staging_table} s
-                WHERE EXISTS (
-                    SELECT 1 FROM titles t WHERE t.tconst = s.tconst
-                )
-                AND EXISTS (
-                    SELECT 1 FROM people p WHERE p.nconst = s.nconst
-                )
+                JOIN titles t ON t.tconst = s.tconst
+                JOIN people p ON p.nconst = s.nconst
                 """)
         finally:
             await self._create_secondary_indexes(conn)
@@ -97,12 +93,8 @@ class IngestTitlePrincipals(IngestDataset):
                     )
                 END
             FROM {self.staging_table} s
-            WHERE EXISTS (
-                SELECT 1 FROM titles t WHERE t.tconst = s.tconst
-            )
-            AND EXISTS (
-                SELECT 1 FROM people p WHERE p.nconst = s.nconst
-            )
+            JOIN titles t ON t.tconst = s.tconst
+            JOIN people p ON p.nconst = s.nconst
             ON CONFLICT (tconst, ordering) DO UPDATE
             SET
                 nconst = EXCLUDED.nconst,

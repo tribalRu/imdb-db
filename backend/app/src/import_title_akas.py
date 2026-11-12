@@ -61,9 +61,7 @@ class IngestTitleAkas(IngestDataset):
                 END,
                 s.is_original
             FROM {self.staging_table} s
-            WHERE EXISTS (
-                SELECT 1 FROM titles t WHERE t.tconst = s.title_id
-            )
+            JOIN titles t ON t.tconst = s.title_id
             """)
 
     async def _upsert_existing(self, conn: asyncpg.Connection) -> None:
@@ -94,9 +92,7 @@ class IngestTitleAkas(IngestDataset):
                 END,
                 s.is_original
             FROM {self.staging_table} s
-            WHERE EXISTS (
-                SELECT 1 FROM titles t WHERE t.tconst = s.title_id
-            )
+            JOIN titles t ON t.tconst = s.title_id
             ON CONFLICT (title_id, ordering) DO UPDATE
             SET
                 title = EXCLUDED.title,

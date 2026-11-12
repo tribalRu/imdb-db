@@ -36,9 +36,7 @@ class IngestTitleRatings(IngestDataset):
                 s.average_rating,
                 s.num_votes
             FROM {self.staging_table} s
-            WHERE EXISTS (
-                SELECT 1 FROM titles t WHERE t.tconst = s.tconst
-            )
+            JOIN titles t ON t.tconst = s.tconst
             """)
 
     async def _upsert_existing(self, conn: asyncpg.Connection) -> None:
@@ -49,9 +47,7 @@ class IngestTitleRatings(IngestDataset):
                 s.average_rating,
                 s.num_votes
             FROM {self.staging_table} s
-            WHERE EXISTS (
-                SELECT 1 FROM titles t WHERE t.tconst = s.tconst
-            )
+            JOIN titles t ON t.tconst = s.tconst
             ON CONFLICT (tconst) DO UPDATE
             SET
                 average_rating = EXCLUDED.average_rating,

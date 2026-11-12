@@ -35,11 +35,10 @@ PERSON_ID = "nm9000001"
 @pytest.fixture(scope="module")
 def client():
     """fresh schema and fixture data, then a TestClient for the real app"""
-    from sqlalchemy import create_engine, text
-    from sqlmodel import SQLModel, Session
-
     import models
     from main import app
+    from sqlalchemy import create_engine, text
+    from sqlmodel import Session, SQLModel
 
     engine = create_engine(os.environ["DATABASE_URL_SYNC"])
     with engine.begin() as connection:
@@ -59,9 +58,7 @@ def client():
                 genres=["Test"],
             )
         )
-        session.add(
-            models.TitleRating(tconst=TITLE_ID, average_rating=8.7, num_votes=1234)
-        )
+        session.add(models.TitleRating(tconst=TITLE_ID, average_rating=8.7, num_votes=1234))
         session.add(
             models.Person(
                 nconst=PERSON_ID,

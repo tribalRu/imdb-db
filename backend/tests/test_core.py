@@ -1,5 +1,7 @@
 """unit tests for the pure parts of the codebase"""
 
+import gzip
+
 import pytest
 from api.search import _normalized_query
 from fastapi import HTTPException
@@ -11,6 +13,7 @@ from src.import_handler import (
     is_import_running,
     resolve_datasets,
 )
+from src.import_title_basic import IngestTitleBasics
 
 
 def test_dataset_table_map_covers_all_supported_datasets():
@@ -79,3 +82,28 @@ def test_clean_cache_dir_rejects_invalid_value(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="DATASET_TO_KEEP"):
         clean_cache_dir()
+
+
+def test_extract_writes_tsv_atomically(tmp_path, monkeypatch):
+    monkeypatch.setattr(IngestTitleBasics, "CACHE_DIR", tmp_path)
+    ingest = IngestTitleBasics(pool=None)
+
+    with gzip.open(ingest.gz_path, "wb") as gz:
+        gz.write(b"tconst\tprimary_title\ntt0000001\tCarmencita\n")
+
+    ingest._extract_if_needed()
+
+    assert ingest.tsv_path.read_bytes() == b"tconst\tprimary_title\ntt0000001\tCarmencita\n"
+    assert list(tmp_path.glob("*.part")) == []
+
+
+def test_extract_failure_leaves_no_partial_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(IngestTitleBasics, "CACHE_DIR", tmp_path)
+    ingest = IngestTitleBasics(pool=None)
+    ingest.gz_path.write_bytes(b"not a gzip archive")
+
+    with pytest.raises(Exception):
+        ingest._extract_if_needed()
+
+    assert not ingest.tsv_path.exists()
+    assert list(tmp_path.glob("*.part")) == []

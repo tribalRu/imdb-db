@@ -163,9 +163,15 @@ class IngestDataset(ABC):
             return
 
         logger.info("extract gz archive to tsv_path=%s", self.tsv_path)
-        with gzip.open(self.gz_path, "rb") as gz:
-            with open(self.tsv_path, "wb") as out:
-                shutil.copyfileobj(gz, out)
+        partial_path = self.tsv_path.parent / f"{self.tsv_path.name}.part"
+        try:
+            with gzip.open(self.gz_path, "rb") as gz:
+                with open(partial_path, "wb") as out:
+                    shutil.copyfileobj(gz, out)
+            partial_path.replace(self.tsv_path)
+        except Exception:
+            partial_path.unlink(missing_ok=True)
+            raise
 
     async def _start_import_task(self, import_start_time: datetime) -> int:
         """Persist a running task row so progress is visible while importing."""

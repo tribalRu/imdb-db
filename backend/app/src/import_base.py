@@ -16,6 +16,7 @@ import asyncpg
 import config
 from database import AsyncSessionLocal
 from models import ImportTask
+from sqlalchemy import func, select
 from src.datasets import DATASET_TABLE_MAP
 
 logger = logging.getLogger(__name__)
@@ -79,8 +80,8 @@ class IngestDataset(ABC):
 
     async def run(self) -> None:
         """run download and import"""
-        if self.tsv_path.exists() and not self.force:
-            logger.info("skip, already imported, dataset=%s (use force to re-import)", self.dataset_name)
+        if not self.force and await self._is_already_imported():
+            logger.info("skip, dataset %s already imported", self.dataset_name)
             return
 
         import_start_time = datetime.now(timezone.utc)
@@ -134,6 +135,16 @@ class IngestDataset(ABC):
 
         if Path(self.gz_path).exists():
             Path(self.gz_path).unlink()
+
+    async def _is_already_imported(self) -> bool:
+        """dataset has at least one completed import task row"""
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(func.count())
+                .select_from(ImportTask)
+                .where(ImportTask.filename == self.dataset_name, ImportTask.status == "completed")
+            )
+            return bool(result.scalar_one())
 
     async def _download_if_needed(self) -> None:
         """download if not exist on file path"""

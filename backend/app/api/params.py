@@ -2,8 +2,17 @@
 
 from typing import Annotated, Literal, Optional
 
-from fastapi import Query
+from fastapi import HTTPException, Query
 from pydantic import BaseModel
+
+
+def validate_cursor(page: int, cursor: str | None, cursor_name: str) -> None:
+    """reject mixing a keyset cursor with an offset page"""
+    if cursor and page > 1:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{cursor_name} cannot be combined with page > 1; continue with the cursor instead",
+        )
 
 
 class PaginationParams(BaseModel):

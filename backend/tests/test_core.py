@@ -3,6 +3,7 @@
 import gzip
 
 import pytest
+from api.params import validate_cursor
 from api.search import _like_pattern, _normalized_query
 from fastapi import HTTPException
 from src.datasets import DATASET_TABLE_MAP
@@ -79,6 +80,18 @@ def test_like_pattern_escapes_wildcards():
     assert _like_pattern("100%") == "%100\\%%"
     assert _like_pattern("a_b") == "%a\\_b%"
     assert _like_pattern("c\\d") == "%c\\\\d%"
+
+
+def test_validate_cursor_allows_first_page():
+    validate_cursor(1, "tt0000001", "after_tconst")
+    validate_cursor(1, None, "after_tconst")
+
+
+def test_validate_cursor_rejects_offset_page():
+    with pytest.raises(HTTPException) as exc_info:
+        validate_cursor(2, "tt0000001", "after_tconst")
+    assert exc_info.value.status_code == 400
+    assert "after_tconst" in exc_info.value.detail
 
 
 def test_clean_cache_dir_keeps_recent_archives(tmp_path, monkeypatch):

@@ -2,7 +2,7 @@
 
 from typing import Annotated, Any
 
-from api.params import CategoryParams, ListTitlesParams
+from api.params import CategoryParams, ListTitlesParams, validate_cursor
 from dependencies import get_session
 from fastapi import APIRouter, Depends, HTTPException, Query
 from models import Person, Title, TitlePrincipal, TitleRating
@@ -18,9 +18,12 @@ MAX_TCONST_FILTER = 500
 async def list_titles(
     params: ListTitlesParams = Depends(),
     tconst: Annotated[list[str] | None, Query()] = None,
+    after_tconst: Annotated[str | None, Query(pattern=r"^tt\d+$")] = None,
     session: AsyncSession = Depends(get_session),
 ) -> list[dict[str, Any]]:
     """get list of titles"""
+    validate_cursor(params.page, after_tconst, "after_tconst")
+
     filters: list[Any] = []
     if tconst:
         if len(tconst) > MAX_TCONST_FILTER:
@@ -37,6 +40,10 @@ async def list_titles(
         filters.append(Title.start_year >= params.year_from)
     if params.title_type:
         filters.append(Title.title_type == params.title_type)
+    if after_tconst:
+        # Keyset pagination: continue right after the last tconst of the
+        # previous page instead of walking (and discarding) N index entries.
+        filters.append(Title.tconst > after_tconst)
 
     # Page over titles only, then fetch ratings for the selected rows. Joining
     # ratings before LIMIT/OFFSET makes Postgres look up a rating for every
@@ -46,7 +53,8 @@ async def list_titles(
         page_stmt = page_stmt.join(TitleRating, TitleRating.tconst == Title.tconst).where(
             TitleRating.average_rating >= params.min_rating
         )
-    page_stmt = page_stmt.order_by(Title.tconst).limit(params.size).offset((params.page - 1) * params.size)
+    offset = 0 if after_tconst else (params.page - 1) * params.size
+    page_stmt = page_stmt.order_by(Title.tconst).limit(params.size).offset(offset)
     page_ids = page_stmt.subquery()
 
     stmt = (

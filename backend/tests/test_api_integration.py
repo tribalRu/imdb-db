@@ -234,6 +234,53 @@ def test_titles_filter_by_min_rating_is_paginated(client):
     assert second.json() == []
 
 
+def test_titles_keyset_cursor_continues_after_last_key(client):
+    resp = client.get("/api/titles", params={"after_tconst": TITLE_ID, "size": 10})
+    assert resp.status_code == 200
+    assert [item["tconst"] for item in resp.json()] == [EPISODE_ID_1, EPISODE_ID_2, LATER_TITLE_ID]
+
+    empty = client.get("/api/titles", params={"after_tconst": LATER_TITLE_ID})
+    assert empty.status_code == 200
+    assert empty.json() == []
+
+
+def test_titles_rejects_cursor_with_page_and_malformed_cursor(client):
+    combined = client.get("/api/titles", params={"after_tconst": TITLE_ID, "page": 2})
+    assert combined.status_code == 400
+
+    malformed = client.get("/api/titles", params={"after_tconst": "nope"})
+    assert malformed.status_code == 422
+
+
+def test_search_titles_keyset_cursor(client):
+    first = client.get("/api/search/titles", params={"q": "Fixture", "size": 1})
+    assert first.status_code == 200
+    first_ids = [item["tconst"] for item in first.json()]
+    assert first_ids == [EPISODE_ID_1]
+
+    rest = client.get(
+        "/api/search/titles",
+        params={"q": "Fixture", "size": 10, "after_tconst": first_ids[-1]},
+    )
+    assert rest.status_code == 200
+    assert [item["tconst"] for item in rest.json()] == [EPISODE_ID_2, LATER_TITLE_ID]
+
+    combined = client.get("/api/search/titles", params={"q": "Fixture", "after_tconst": TITLE_ID, "page": 2})
+    assert combined.status_code == 400
+
+
+def test_search_people_keyset_cursor(client):
+    hits = client.get("/api/search/people", params={"q": "Integration", "size": 1}).json()
+    assert [item["nconst"] for item in hits] == [PERSON_ID]
+
+    rest = client.get("/api/search/people", params={"q": "Integration", "after_nconst": PERSON_ID})
+    assert rest.status_code == 200
+    assert rest.json() == []
+
+    combined = client.get("/api/search/people", params={"q": "Integration", "after_nconst": PERSON_ID, "page": 2})
+    assert combined.status_code == 400
+
+
 def test_search_finds_fixture(client):
     resp = client.get("/api/search/titles", params={"q": "Integration Test"})
     assert resp.status_code == 200

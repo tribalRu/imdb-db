@@ -106,6 +106,12 @@ Available endpoints:
 - `GET /api/search/titles`
 - `GET /api/search/people`
 
+List endpoints take `page` and `size`. `/api/titles`, `/api/search/titles`
+and `/api/search/people` also accept a keyset cursor: pass the last
+`tconst`/`nconst` of the previous response as `after_tconst`/`after_nconst`
+to continue from there. A cursor cannot be combined with `page > 1`; with a
+cursor the response is ordered by that key and no rows before it are scanned.
+
 ## Ingest Dataset
 
 In general, that works as such:

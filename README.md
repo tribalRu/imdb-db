@@ -297,6 +297,15 @@ The indexes are built when the migration runs, so on an already populated
 database expect a few minutes for the build. Each title trigram index is about
 480 MB for the full dataset.
 
+These indexes are too expensive to maintain row by row during a bulk load, so
+the importer drops them before the merge and rebuilds them once afterwards
+(`REBUILD_INDEXES` in the dataset importers). Search endpoints keep working
+while a dataset is being imported, but fall back to sequential scans until the
+rebuild finishes. The same applies to `ix_episodes_parent_tconst` and
+`ix_title_principals_nconst`. If the process is killed during the merge, the
+next start of that import rebuilds the indexes; until then the search endpoints
+stay slow.
+
 On Windows, exclude the PostgreSQL data directory and `postgres.exe` from
 Windows Defender real-time scanning. Otherwise WAL writes during import can be
 an order of magnitude slower:

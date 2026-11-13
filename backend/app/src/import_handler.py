@@ -7,6 +7,9 @@ from typing import Type
 
 import asyncpg
 import config
+from database import AsyncSessionLocal
+from models import ImportTask
+from sqlalchemy import update
 from src.import_base import IngestDataset
 from src.import_name_basic import IngestNameBasics
 from src.import_title_akas import IngestTitleAkas
@@ -51,6 +54,9 @@ def resolve_datasets(
     if dataset_names is None:
         return list(INGEST_BY_DATASET_NAME.values()), list(SUPPORTED_DATASET_NAMES)
 
+    if not dataset_names:
+        raise ValueError("data_set must contain at least one dataset name, or be omitted to import everything.")
+
     selected_classes: list[Type[IngestDataset]] = []
     selected_dataset_names: list[str] = []
     for dataset_name in dataset_names:
@@ -86,6 +92,24 @@ def clean_cache_dir():
             path.unlink()
 
 
+async def reconcile_stale_import_tasks() -> int:
+    """
+    Mark import tasks left in `running` state by a previous process as failed.
+
+    A task is only `running` while `import_datasets` holds the process-wide
+    lock. If the process is restarted mid-import, that row would otherwise stay
+    `running` forever and hide the failure from the dashboard.
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(update(ImportTask).where(ImportTask.status == "running").values(status="failed"))
+        await session.commit()
+        stale_count = result.rowcount or 0
+
+    if stale_count:
+        logger.warning("marked stale import tasks as failed count=%s", stale_count)
+    return stale_count
+
+
 async def import_datasets(dataset_names: list[str] | None = None, force: bool = False) -> None:
     """run all imports, or selected imports by dataset names"""
 
@@ -108,4 +132,8 @@ async def import_datasets(dataset_names: list[str] | None = None, force: bool = 
         finally:
             await pool.close()
 
-    clean_cache_dir()
+    try:
+        clean_cache_dir()
+    except Exception:  # pylint: disable=broad-exception-caught
+        # Cleanup is best-effort: do not fail an otherwise successful import.
+        logger.warning("cache cleanup failed", exc_info=True)

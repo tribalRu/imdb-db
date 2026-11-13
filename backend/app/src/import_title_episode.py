@@ -8,6 +8,12 @@ class IngestTitleEpisodes(IngestDataset):
     """ingest dataset"""
 
     DATASET_NAME = "title.episode.tsv"
+    REBUILD_INDEXES = (
+        (
+            "ix_episodes_parent_tconst",
+            "CREATE INDEX IF NOT EXISTS ix_episodes_parent_tconst ON episodes (parent_tconst)",
+        ),
+    )
 
     async def create_staging_table(self, conn: asyncpg.Connection) -> None:
         await conn.execute(f"""

@@ -28,6 +28,7 @@ from dependencies import verify_bearer_token
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
+from src.import_handler import reconcile_stale_import_tasks
 
 logging.basicConfig(
     level=logging.INFO,
@@ -51,6 +52,10 @@ async def _warm_stats() -> None:
 async def lifespan(_: FastAPI):
     """startup checks"""
     config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        await reconcile_stale_import_tasks()
+    except Exception:  # pylint: disable=broad-exception-caught
+        logging.getLogger(__name__).warning("stale import task reconciliation failed", exc_info=True)
     warm_task = asyncio.create_task(_warm_stats())
     try:
         yield

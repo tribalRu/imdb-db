@@ -39,6 +39,18 @@ def test_resolve_datasets_rejects_unknown_dataset():
         resolve_datasets(["unknown.tsv"])
 
 
+def test_resolve_datasets_rejects_empty_selection():
+    with pytest.raises(ValueError, match="at least one dataset"):
+        resolve_datasets([])
+
+
+def test_rebuild_index_statements_match_index_names():
+    for ingest_class in INGEST_BY_DATASET_NAME.values():
+        for index_name, ddl in ingest_class.REBUILD_INDEXES:
+            assert f"CREATE INDEX IF NOT EXISTS {index_name}" in ddl
+            assert index_name in ddl
+
+
 def test_import_lock_is_released_by_default():
     assert is_import_running() is False
 

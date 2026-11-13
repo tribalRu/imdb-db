@@ -8,6 +8,22 @@ class IngestTitleBasics(IngestDataset):
     """ingest title basic dataset"""
 
     DATASET_NAME = "title.basics.tsv"
+    REBUILD_INDEXES = (
+        (
+            "ix_titles_primary_title_trgm",
+            "CREATE INDEX IF NOT EXISTS ix_titles_primary_title_trgm "
+            "ON titles USING GIN (primary_title gin_trgm_ops)",
+        ),
+        (
+            "ix_titles_original_title_trgm",
+            "CREATE INDEX IF NOT EXISTS ix_titles_original_title_trgm "
+            "ON titles USING GIN (original_title gin_trgm_ops)",
+        ),
+        (
+            "ix_titles_genres_gin",
+            "CREATE INDEX IF NOT EXISTS ix_titles_genres_gin ON titles USING GIN (genres)",
+        ),
+    )
 
     async def create_staging_table(self, conn: asyncpg.Connection) -> None:
         await conn.execute(f"""

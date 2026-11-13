@@ -8,6 +8,12 @@ class IngestNameBasics(IngestDataset):
     """ingest dataset"""
 
     DATASET_NAME = "name.basics.tsv"
+    REBUILD_INDEXES = (
+        (
+            "ix_people_primary_name_trgm",
+            "CREATE INDEX IF NOT EXISTS ix_people_primary_name_trgm " "ON people USING GIN (primary_name gin_trgm_ops)",
+        ),
+    )
 
     async def create_staging_table(self, conn: asyncpg.Connection) -> None:
         await conn.execute(f"""

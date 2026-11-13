@@ -36,6 +36,30 @@ EPISODE_ID_2 = "tt9000003"
 LATER_TITLE_ID = "tt9000004"
 
 
+def _add_import_task(filename: str, status: str) -> None:
+    """insert an import task row through the sync engine"""
+    import models
+    from sqlalchemy import create_engine
+    from sqlmodel import Session
+
+    engine = create_engine(os.environ["DATABASE_URL_SYNC"])
+    try:
+        with Session(engine) as session:
+            session.add(
+                models.ImportTask(
+                    filename=filename,
+                    size_compressed=0,
+                    size_raw=0,
+                    import_start_time=datetime.now(timezone.utc),
+                    duration=0.0,
+                    status=status,
+                )
+            )
+            session.commit()
+    finally:
+        engine.dispose()
+
+
 @pytest.fixture(scope="module")
 def client():
     """fresh schema and fixture data, then a TestClient for the real app"""
@@ -140,7 +164,7 @@ def client():
         )
         session.add(
             models.ImportTask(
-                filename="name.basics.tsv",
+                filename="title.episode.tsv",
                 size_compressed=0,
                 size_raw=0,
                 import_start_time=datetime.now(timezone.utc),
@@ -219,6 +243,12 @@ def test_ingest_rejects_unknown_dataset(client):
     assert resp.status_code == 400
 
 
+def test_ingest_rejects_empty_dataset_list(client):
+    # an empty list is not "import nothing": omitting data_set means everything
+    resp = client.post("/api/ingest", json={"data_set": []})
+    assert resp.status_code == 400
+
+
 def test_stats_reports_fixture_counts(client):
     resp = client.get("/api/stats")
     assert resp.status_code == 200
@@ -251,12 +281,25 @@ def test_series_episodes_are_paginated(client):
 
 
 def test_import_tasks_filter_by_status(client):
+    _add_import_task("name.basics.tsv", "running")
+
     resp = client.get("/api/import-tasks", params={"status": "running"})
     assert resp.status_code == 200
     items = resp.json()
     assert items
     assert all(item["status"] == "running" for item in items)
-    assert items[0]["filename"] == "name.basics.tsv"
+    assert {item["filename"] for item in items} == {"name.basics.tsv"}
+
+
+def test_startup_marks_stale_running_tasks_failed(client):
+    # the fixture seeds a `running` row before the app starts; the lifespan
+    # hook must not leave it stuck after that process is gone
+    resp = client.get("/api/import-tasks", params={"status": "failed"})
+    assert resp.status_code == 200
+    assert "title.episode.tsv" in {item["filename"] for item in resp.json()}
+
+    running = client.get("/api/import-tasks", params={"status": "running"})
+    assert "title.episode.tsv" not in {item["filename"] for item in running.json()}
 
 
 def test_import_tasks_reject_unknown_status(client):

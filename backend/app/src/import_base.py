@@ -31,6 +31,10 @@ class IngestDataset(ABC):
     BASE_URL = "https://datasets.imdbws.com"
     CACHE_DIR = config.CACHE_DIR
     DATASET_NAME: ClassVar[str] = ""
+    # (index name, CREATE INDEX statement) pairs for indexes that are too
+    # expensive to maintain row-by-row during a bulk load. They are dropped
+    # before the COPY/merge and rebuilt once afterwards.
+    REBUILD_INDEXES: ClassVar[tuple[tuple[str, str], ...]] = ()
 
     def __init__(self, pool: asyncpg.Pool, force: bool = False):
         if not self.DATASET_NAME:
@@ -95,19 +99,35 @@ class IngestDataset(ABC):
 
             async with self.pool.acquire() as conn:
                 db_conn = cast(asyncpg.Connection, conn)
-                async with conn.transaction():
-                    await db_conn.execute("SET LOCAL synchronous_commit = off")
-                    logger.info("ingest into temporary table staging_table=%s", self.staging_table)
-                    await self.create_staging_table(db_conn)
-
-                    async for lines in self._read_tsv_in_chunks():
-                        await self.copy_chunk(db_conn, lines)
-
-                    await db_conn.execute(f"ANALYZE {self.staging_table}")
-                    logger.info("merge temporary table into final table")
-                    await self.merge_into_final(db_conn)
-
                 target_table = DATASET_TABLE_MAP.get(self.dataset_name)
+                try:
+                    await self._drop_rebuild_indexes(db_conn)
+                    async with conn.transaction():
+                        await db_conn.execute("SET LOCAL synchronous_commit = off")
+                        logger.info("ingest into temporary table staging_table=%s", self.staging_table)
+                        await self.create_staging_table(db_conn)
+
+                        async for lines in self._read_tsv_in_chunks():
+                            await self.copy_chunk(db_conn, lines)
+
+                        await db_conn.execute(f"ANALYZE {self.staging_table}")
+                        staging_has_rows = await db_conn.fetchval(f"SELECT EXISTS (SELECT 1 FROM {self.staging_table})")
+                        logger.info("merge temporary table into final table")
+                        await self.merge_into_final(db_conn)
+
+                        # A merge into a dependent table joins against titles/people.
+                        # If those are missing, every row is filtered out and the
+                        # import would otherwise be recorded as a success.
+                        if staging_has_rows and target_table:
+                            target_has_rows = await db_conn.fetchval(f"SELECT EXISTS (SELECT 1 FROM {target_table})")
+                            if not target_has_rows:
+                                raise RuntimeError(
+                                    f"{self.dataset_name}: staging had rows but {target_table} stayed empty; "
+                                    "import the referenced dataset first"
+                                )
+                finally:
+                    await self._create_rebuild_indexes(db_conn)
+
                 if target_table:
                     logger.info("analyze final table table=%s", target_table)
                     await db_conn.execute(f"ANALYZE {target_table}")
@@ -151,6 +171,7 @@ class IngestDataset(ABC):
         if self.gz_path.exists() or self.tsv_path.exists():
             return
 
+        self.gz_path.parent.mkdir(parents=True, exist_ok=True)
         logger.info("download dataset to gz_path=%s", self.gz_path)
         partial_path = self.gz_path.with_suffix(f"{self.gz_path.suffix}.part")
         partial_path.unlink(missing_ok=True)
@@ -259,6 +280,24 @@ class IngestDataset(ABC):
     async def _is_table_empty(self, conn: asyncpg.Connection, table_name: str) -> bool:
         """check if final target table has rows"""
         return bool(await conn.fetchval(f"SELECT NOT EXISTS (SELECT 1 FROM {table_name} LIMIT 1)"))
+
+    async def _drop_rebuild_indexes(self, conn: asyncpg.Connection) -> None:
+        """
+        Drop indexes that are too expensive to maintain during a bulk load.
+
+        A GIN trigram index costs far more per inserted row than a sequential
+        build at the end, and the merge also updates almost every row. Dropping
+        them first turned multi-hour imports into minutes on the full dataset.
+        """
+        for index_name, _ in self.REBUILD_INDEXES:
+            logger.info("drop index before bulk load index=%s dataset=%s", index_name, self.dataset_name)
+            await conn.execute(f'DROP INDEX IF EXISTS "{index_name}"')
+
+    async def _create_rebuild_indexes(self, conn: asyncpg.Connection) -> None:
+        """Recreate the indexes dropped by `_drop_rebuild_indexes` in one pass."""
+        for index_name, ddl in self.REBUILD_INDEXES:
+            logger.info("rebuild index index=%s dataset=%s", index_name, self.dataset_name)
+            await conn.execute(ddl)
 
     @abstractmethod
     async def create_staging_table(self, conn: asyncpg.Connection) -> None:

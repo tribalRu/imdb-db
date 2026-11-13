@@ -213,6 +213,27 @@ def test_title_not_found(client):
     assert client.get("/api/titles/tt9999999").status_code == 404
 
 
+def test_titles_pages_are_ordered_and_distinct(client):
+    first = client.get("/api/titles", params={"size": 2, "page": 1}).json()
+    second = client.get("/api/titles", params={"size": 2, "page": 2}).json()
+    first_ids = [item["tconst"] for item in first]
+    second_ids = [item["tconst"] for item in second]
+    assert first_ids == sorted(first_ids)
+    assert second_ids == sorted(second_ids)
+    assert set(first_ids).isdisjoint(second_ids)
+
+
+def test_titles_filter_by_min_rating_is_paginated(client):
+    first = client.get("/api/titles", params={"min_rating": 8.0, "size": 1, "page": 1})
+    assert first.status_code == 200
+    assert [item["tconst"] for item in first.json()] == [TITLE_ID]
+    assert first.json()[0]["average_rating"] == 8.7
+
+    second = client.get("/api/titles", params={"min_rating": 8.0, "size": 1, "page": 2})
+    assert second.status_code == 200
+    assert second.json() == []
+
+
 def test_search_finds_fixture(client):
     resp = client.get("/api/search/titles", params={"q": "Integration Test"})
     assert resp.status_code == 200

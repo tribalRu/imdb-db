@@ -21,28 +21,40 @@ async def list_titles(
     session: AsyncSession = Depends(get_session),
 ) -> list[dict[str, Any]]:
     """get list of titles"""
-    stmt = select(Title, TitleRating).outerjoin(TitleRating, TitleRating.tconst == Title.tconst)
-
+    filters: list[Any] = []
     if tconst:
         if len(tconst) > MAX_TCONST_FILTER:
             raise HTTPException(
                 status_code=400,
                 detail=f"tconst accepts at most {MAX_TCONST_FILTER} values.",
             )
-        stmt = stmt.where(Title.tconst.in_(tconst))  # type: ignore  # pylint: disable=no-member
+        filters.append(Title.tconst.in_(tconst))  # type: ignore  # pylint: disable=no-member
     if params.genre:
         # `@>` (contains) is the array operator the GIN index supports;
         # `<value> = ANY(genres)` cannot use ix_titles_genres_gin.
-        stmt = stmt.where(Title.genres.contains([params.genre]))  # type: ignore  # pylint: disable=no-member
+        filters.append(Title.genres.contains([params.genre]))  # type: ignore  # pylint: disable=no-member
     if params.year_from:
-        stmt = stmt.where(Title.start_year >= params.year_from)
+        filters.append(Title.start_year >= params.year_from)
     if params.title_type:
-        stmt = stmt.where(Title.title_type == params.title_type)
-    if params.min_rating is not None:
-        stmt = stmt.where(TitleRating.average_rating >= params.min_rating)
+        filters.append(Title.title_type == params.title_type)
 
-    stmt = stmt.order_by(Title.tconst)
-    stmt = stmt.limit(params.size).offset((params.page - 1) * params.size)
+    # Page over titles only, then fetch ratings for the selected rows. Joining
+    # ratings before LIMIT/OFFSET makes Postgres look up a rating for every
+    # skipped row: page=100000 took 5.3s instead of 0.7s.
+    page_stmt = select(Title.tconst).where(*filters)
+    if params.min_rating is not None:
+        page_stmt = page_stmt.join(TitleRating, TitleRating.tconst == Title.tconst).where(
+            TitleRating.average_rating >= params.min_rating
+        )
+    page_stmt = page_stmt.order_by(Title.tconst).limit(params.size).offset((params.page - 1) * params.size)
+    page_ids = page_stmt.subquery()
+
+    stmt = (
+        select(Title, TitleRating)
+        .join(page_ids, page_ids.c.tconst == Title.tconst)
+        .outerjoin(TitleRating, TitleRating.tconst == Title.tconst)
+        .order_by(Title.tconst)
+    )
     result = await session.execute(stmt)
     payloads: list[dict[str, Any]] = []
     for title, rating in result.all():

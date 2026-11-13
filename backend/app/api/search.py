@@ -29,6 +29,12 @@ def _normalized_query(params: SearchParams) -> str:
     return q
 
 
+def _like_pattern(q: str) -> str:
+    """wrap a query in %...% and escape LIKE wildcards so they match literally"""
+    escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 async def _search_paginated(
     session: AsyncSession,
     model: Any,
@@ -59,11 +65,11 @@ async def search_titles(
     session: AsyncSession = Depends(get_session),
 ) -> list[Title]:
     """search titles"""
-    like = f"%{_normalized_query(params)}%"
+    like = _like_pattern(_normalized_query(params))
     conditions: list[ColumnElement[bool]] = [
         or_(
-            Title.primary_title.ilike(like),  # type: ignore
-            Title.original_title.ilike(like),  # type: ignore
+            Title.primary_title.ilike(like, escape="\\"),  # type: ignore
+            Title.original_title.ilike(like, escape="\\"),  # type: ignore
         )
     ]
     if params.title_type:
@@ -80,7 +86,7 @@ async def search_people(
     session: AsyncSession = Depends(get_session),
 ) -> list[Person]:
     """search people"""
-    like = f"%{_normalized_query(params)}%"
-    conditions: list[ColumnElement[bool]] = [Person.primary_name.ilike(like)]  # type: ignore
+    like = _like_pattern(_normalized_query(params))
+    conditions: list[ColumnElement[bool]] = [Person.primary_name.ilike(like, escape="\\")]  # type: ignore
 
     return await _search_paginated(session, Person, Person.nconst, conditions, params)

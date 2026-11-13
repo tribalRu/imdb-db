@@ -31,7 +31,9 @@ async def list_titles(
             )
         stmt = stmt.where(Title.tconst.in_(tconst))  # type: ignore  # pylint: disable=no-member
     if params.genre:
-        stmt = stmt.where(Title.genres.any(params.genre))  # type: ignore  # pylint: disable=no-member
+        # `@>` (contains) is the array operator the GIN index supports;
+        # `<value> = ANY(genres)` cannot use ix_titles_genres_gin.
+        stmt = stmt.where(Title.genres.contains([params.genre]))  # type: ignore  # pylint: disable=no-member
     if params.year_from:
         stmt = stmt.where(Title.start_year >= params.year_from)
     if params.title_type:

@@ -35,6 +35,7 @@ async def list_series_episodes(
     if params.season_number:
         stmt = stmt.where(Episode.season_number == params.season_number)
 
+    stmt = stmt.limit(params.size).offset((params.page - 1) * params.size)
     result = await session.execute(stmt)
     payloads: list[dict[str, Any]] = []
     parent_payload = parent.model_dump()

@@ -3,7 +3,7 @@
 import gzip
 
 import pytest
-from api.search import _normalized_query
+from api.search import _like_pattern, _normalized_query
 from fastapi import HTTPException
 from src.datasets import DATASET_TABLE_MAP
 from src.import_handler import (
@@ -57,6 +57,16 @@ def test_normalized_query_rejects_blank():
     with pytest.raises(HTTPException) as exc_info:
         _normalized_query(_Params())
     assert exc_info.value.status_code == 422
+
+
+def test_like_pattern_matches_plain_text():
+    assert _like_pattern("matrix") == "%matrix%"
+
+
+def test_like_pattern_escapes_wildcards():
+    assert _like_pattern("100%") == "%100\\%%"
+    assert _like_pattern("a_b") == "%a\\_b%"
+    assert _like_pattern("c\\d") == "%c\\\\d%"
 
 
 def test_clean_cache_dir_keeps_recent_archives(tmp_path, monkeypatch):

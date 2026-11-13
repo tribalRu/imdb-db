@@ -31,6 +31,9 @@ pytestmark = pytest.mark.skipif(
 
 TITLE_ID = "tt9000001"
 PERSON_ID = "nm9000001"
+EPISODE_ID_1 = "tt9000002"
+EPISODE_ID_2 = "tt9000003"
+LATER_TITLE_ID = "tt9000004"
 
 
 @pytest.fixture(scope="module")
@@ -61,6 +64,55 @@ def client():
         )
         session.add(models.TitleRating(tconst=TITLE_ID, average_rating=8.7, num_votes=1234))
         session.add(
+            models.Title(
+                tconst=EPISODE_ID_1,
+                title_type="tvEpisode",
+                primary_title="Fixture Episode One",
+                original_title="Fixture Episode One",
+                is_adult=False,
+                start_year=2001,
+                genres=["Test"],
+            )
+        )
+        session.add(
+            models.Title(
+                tconst=EPISODE_ID_2,
+                title_type="tvEpisode",
+                primary_title="Fixture Episode Two",
+                original_title="Fixture Episode Two",
+                is_adult=False,
+                start_year=2001,
+                genres=["Test"],
+            )
+        )
+        session.add(
+            models.Title(
+                tconst=LATER_TITLE_ID,
+                title_type="movie",
+                primary_title="Later Fixture Movie",
+                original_title="Later Fixture Movie",
+                is_adult=False,
+                start_year=2020,
+                genres=["Test"],
+            )
+        )
+        session.add(
+            models.Episode(
+                tconst=EPISODE_ID_1,
+                parent_tconst=TITLE_ID,
+                season_number=1,
+                episode_number=1,
+            )
+        )
+        session.add(
+            models.Episode(
+                tconst=EPISODE_ID_2,
+                parent_tconst=TITLE_ID,
+                season_number=1,
+                episode_number=2,
+            )
+        )
+        session.add(
             models.Person(
                 nconst=PERSON_ID,
                 primary_name="Integration Test Person",
@@ -75,6 +127,15 @@ def client():
                 nconst=PERSON_ID,
                 category="actor",
                 characters=["Someone"],
+            )
+        )
+        session.add(
+            models.TitlePrincipal(
+                tconst=LATER_TITLE_ID,
+                ordering=1,
+                nconst=PERSON_ID,
+                category="actor",
+                characters=["Someone Else"],
             )
         )
         session.add(
@@ -139,6 +200,20 @@ def test_search_blank_rejected(client):
     assert resp.status_code == 422
 
 
+def test_search_treats_wildcards_literally(client):
+    # % and _ must be escaped, otherwise they match arbitrary rows.
+    for query in ("%", "_"):
+        resp = client.get("/api/search/titles", params={"q": query})
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+
+def test_genre_filter_matches_array_contains(client):
+    resp = client.get("/api/titles", params={"genre": "Test", "size": 10})
+    assert resp.status_code == 200
+    assert TITLE_ID in {item["tconst"] for item in resp.json()}
+
+
 def test_ingest_rejects_unknown_dataset(client):
     resp = client.post("/api/ingest", json={"data_set": ["nope.tsv"]})
     assert resp.status_code == 400
@@ -149,7 +224,7 @@ def test_stats_reports_fixture_counts(client):
     assert resp.status_code == 200
     payload = resp.json()
     datasets = {dataset["dataset_name"]: dataset for dataset in payload["datasets"]}
-    assert datasets["title.basics.tsv"]["document_count"] == 1
+    assert datasets["title.basics.tsv"]["document_count"] == 4
     assert datasets["title.ratings.tsv"]["document_count"] == 1
     assert payload["total_document_count"] >= 1
 
@@ -158,8 +233,21 @@ def test_people_credits(client):
     resp = client.get(f"/api/people/{PERSON_ID}/credits")
     assert resp.status_code == 200
     credits = resp.json()
-    assert credits[0]["tconst"] == TITLE_ID
+    # newest title first; the sort key is the release year, not tconst
+    assert [credit["tconst"] for credit in credits] == [LATER_TITLE_ID, TITLE_ID]
+    assert credits[0]["title"]["start_year"] == 2020
     assert credits[0]["category"] == "actor"
+
+
+def test_series_episodes_are_paginated(client):
+    first = client.get(f"/api/series/{TITLE_ID}/episodes", params={"size": 1, "page": 1})
+    assert first.status_code == 200
+    assert len(first.json()) == 1
+
+    second = client.get(f"/api/series/{TITLE_ID}/episodes", params={"size": 1, "page": 2})
+    assert second.status_code == 200
+    assert len(second.json()) == 1
+    assert first.json()[0]["tconst"] != second.json()[0]["tconst"]
 
 
 def test_import_tasks_filter_by_status(client):

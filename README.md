@@ -209,18 +209,10 @@ CREATE ROLE "imdb-db" LOGIN PASSWORD 'secret123';
 CREATE DATABASE "imdb-db" OWNER "imdb-db";
 ```
 
-For large imports, tune `postgresql.conf` (adjust to your RAM) and restart
-PostgreSQL:
-
-```ini
-shared_buffers = 2GB
-maintenance_work_mem = 1GB
-work_mem = 64MB
-min_wal_size = 2GB
-max_wal_size = 20GB
-checkpoint_timeout = 15min
-checkpoint_completion_target = 0.9
-```
+For large imports, tune `postgresql.conf` before the first import — see
+[Server sizing and PostgreSQL settings](#server-sizing-and-postgresql-settings)
+for values by RAM. `shared_buffers` needs a restart; most other settings only
+need `SELECT pg_reload_conf();`.
 
 ### 2. Backend
 
@@ -328,6 +320,78 @@ memory.
 Native deployment means you manage PostgreSQL upgrades, backups and Python
 dependencies yourself. Docker remains a better choice for a NAS/server where
 reproducibility matters more than raw import speed.
+
+## Server sizing and PostgreSQL settings
+
+The full IMDb dataset (all six files) currently takes about 30 GB in
+PostgreSQL (roughly 18 GB heap and 11 GB indexes), plus up to 20 GB of WAL
+during imports and ~9.5 GB of cached TSV files.
+
+| Workload | vCPU | RAM | Disk | Notes |
+| --- | --- | --- | --- | --- |
+| Single user / demo | 4 | 16 GB | 150 GB SSD | full dataset fits; imports take longer |
+| Recommended production | 8 | 32 GB | 250–500 GB NVMe | hot tables and search indexes fit in OS cache |
+| Many clients / several API workers | 16 | 64 GB | 1 TB NVMe | add PgBouncer, consider a read replica |
+
+Why these numbers:
+
+- The hot set is `titles` (3.2 GB), `people` (3.1 GB), `title_ratings`
+  (0.2 GB) and the title GIN indexes (~1.6 GB) — about 8 GB. With 32 GB of RAM
+  the OS can cache all of it next to PostgreSQL.
+- `title_principals` (14 GB) and `title_akas` (7.9 GB) are read by key or
+  rarely at all, so they do not need to stay cached.
+- Imports are CPU- and I/O-heavy (COPY, merge, index rebuild). Keep 2–3× the
+  database size free for WAL, temp files and vacuum.
+- Prefer NVMe: the merge and GIN rebuild are random-I/O heavy. Linux with
+  ext4/xfs has lower fsync overhead than NTFS; Windows is fine for testing.
+
+Starting point for PostgreSQL 17 on a 32 GB machine:
+
+```ini
+shared_buffers = 8GB
+effective_cache_size = 24GB
+work_mem = 64MB
+maintenance_work_mem = 2047MB
+autovacuum_work_mem = 512MB
+random_page_cost = 1.1
+max_wal_size = 20GB
+min_wal_size = 2GB
+checkpoint_timeout = 15min
+checkpoint_completion_target = 0.9
+wal_compression = lz4
+max_parallel_workers_per_gather = 4
+autovacuum_max_workers = 4
+autovacuum_naptime = 30s
+autovacuum_vacuum_scale_factor = 0.05
+autovacuum_analyze_scale_factor = 0.02
+max_connections = 100
+```
+
+Scale the memory settings by RAM:
+
+- 16 GB: `shared_buffers=4GB`, `effective_cache_size=12GB`,
+  `maintenance_work_mem=1GB`, `work_mem=32–64MB`.
+- 32 GB: values above.
+- 64 GB: `shared_buffers=16GB`, `effective_cache_size=48GB`,
+  `maintenance_work_mem=2047MB` (the Windows build caps it at 2 GB − 1 kB).
+
+Notes:
+
+- `effective_io_concurrency` only helps where `posix_fadvise` exists (Linux);
+  on Windows leave it at the default.
+- A large `max_wal_size` is intentional: re-imports rewrite most rows, and WAL
+  is reclaimed at checkpoints rather than right after an import.
+- The autovacuum scale factors are lower than the defaults because
+  `title_principals` and `title_akas` are very large.
+- `random_page_cost=1.1` reflects SSD storage; on spinning disks keep 4.
+
+Backups: the database is derived data. A full re-import takes a few hours and
+the cached TSVs avoid a new download, so a nightly dump is optional. Use
+pgBackRest or WAL archiving if you need point-in-time recovery.
+
+If the API is exposed beyond localhost, set `API_TOKEN` and put it behind a
+reverse proxy with rate limiting. The public instance can use a `SELECT`-only
+role; keep the owning role only if `/api/ingest` stays reachable.
 
 ## CI/CD Images
 

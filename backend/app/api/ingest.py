@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 import config
+from api.cache import invalidate_response_cache
 from api.params import ImportTaskParams
 from database import AsyncSessionLocal
 from dependencies import get_session
@@ -73,6 +74,7 @@ async def _run_ingest_task(dataset_names: list[str] | None, force: bool) -> None
         logger.exception("dataset ingest task failed datasets=%s force=%s", dataset_names, force)
     finally:
         invalidate_stats_cache()
+        invalidate_response_cache()
 
 
 @router.post("/ingest", response_model=TriggerIngestResponse)

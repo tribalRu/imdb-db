@@ -112,6 +112,13 @@ and `/api/search/people` also accept a keyset cursor: pass the last
 to continue from there. A cursor cannot be combined with `page > 1`; with a
 cursor the response is ordered by that key and no rows before it are scanned.
 
+Detail endpoints (`/api/titles/{tconst}`, `/api/people/{nconst}`) keep their
+payloads in an in-process LRU cache (20k entries, 5 minute TTL) and return an
+`ETag` with `Cache-Control: public, max-age=60`. Send the ETag back as
+`If-None-Match` to get `304 Not Modified`. The cache is cleared when an import
+finishes; tune it with `API_CACHE_ENTRIES` and `API_CACHE_TTL_SECONDS`
+(`0` disables caching).
+
 ## Ingest Dataset
 
 In general, that works as such:

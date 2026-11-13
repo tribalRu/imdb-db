@@ -213,6 +213,45 @@ def test_title_not_found(client):
     assert client.get("/api/titles/tt9999999").status_code == 404
 
 
+def test_title_detail_cache_and_etag(client):
+    first = client.get(f"/api/titles/{TITLE_ID}")
+    assert first.status_code == 200
+    etag = first.headers["etag"]
+    assert etag.startswith('W/"')
+    assert first.headers["cache-control"] == "public, max-age=60"
+
+    again = client.get(f"/api/titles/{TITLE_ID}")
+    assert again.status_code == 200
+    assert again.json() == first.json()
+    assert again.headers["etag"] == etag
+
+    not_modified = client.get(f"/api/titles/{TITLE_ID}", headers={"If-None-Match": etag})
+    assert not_modified.status_code == 304
+    assert not_modified.content == b""
+
+
+def test_person_detail_cache_and_etag(client):
+    first = client.get(f"/api/people/{PERSON_ID}")
+    assert first.status_code == 200
+    assert first.json()["nconst"] == PERSON_ID
+    etag = first.headers["etag"]
+    assert etag.startswith('W/"')
+
+    not_modified = client.get(f"/api/people/{PERSON_ID}", headers={"If-None-Match": etag})
+    assert not_modified.status_code == 304
+    assert not_modified.content == b""
+
+
+def test_response_cache_is_cleared_by_invalidation(client):
+    from api.cache import invalidate_response_cache, response_cache
+
+    assert client.get(f"/api/titles/{TITLE_ID}").status_code == 200
+    assert response_cache.get(f"title:{TITLE_ID}") is not None
+
+    invalidate_response_cache()
+    assert response_cache.get(f"title:{TITLE_ID}") is None
+
+
 def test_titles_pages_are_ordered_and_distinct(client):
     first = client.get("/api/titles", params={"size": 2, "page": 1}).json()
     second = client.get("/api/titles", params={"size": 2, "page": 2}).json()

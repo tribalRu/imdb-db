@@ -2,9 +2,10 @@
 
 from typing import Annotated, Any
 
+from api.cache import finalize_cached_response, make_etag, response_cache
 from api.params import CategoryParams, ListTitlesParams, validate_cursor
 from dependencies import get_session
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from models import Person, Title, TitlePrincipal, TitleRating
 from schemas import TitlePrincipalOut, TitleWithRating
 from sqlalchemy import select
@@ -82,9 +83,16 @@ async def list_titles(
 @router.get("/titles/{tconst}", response_model=TitleWithRating)
 async def get_title(
     tconst: str,
+    request: Request,
+    response: Response,
     session: AsyncSession = Depends(get_session),
-) -> dict[str, Any]:
+) -> dict[str, Any] | Response:
     """get single title"""
+    cache_key = f"title:{tconst}"
+    cached = response_cache.get(cache_key)
+    if cached is not None:
+        return finalize_cached_response(request, response, cached)
+
     result = await session.execute(
         select(Title, TitleRating)
         .outerjoin(TitleRating, TitleRating.tconst == Title.tconst)
@@ -103,7 +111,10 @@ async def get_title(
     else:
         payload["average_rating"] = None
         payload["num_votes"] = None
-    return payload
+
+    entry = (payload, make_etag(payload))
+    response_cache.set(cache_key, entry)
+    return finalize_cached_response(request, response, entry)
 
 
 @router.get("/titles/{tconst}/principals", response_model=list[TitlePrincipalOut])

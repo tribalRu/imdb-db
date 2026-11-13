@@ -2,9 +2,10 @@
 
 from typing import Any
 
+from api.cache import finalize_cached_response, make_etag, response_cache
 from api.params import CategoryParams
 from dependencies import get_session
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from models import Person, Title, TitlePrincipal
 from schemas import CreditItem, PersonDetail
 from sqlalchemy import func, select
@@ -16,9 +17,16 @@ router = APIRouter(prefix="/api", tags=["people"])
 @router.get("/people/{nconst}", response_model=PersonDetail)
 async def get_person(
     nconst: str,
+    request: Request,
+    response: Response,
     session: AsyncSession = Depends(get_session),
-) -> dict[str, Any]:
+) -> dict[str, Any] | Response:
     """single person"""
+    cache_key = f"person:{nconst}"
+    cached = response_cache.get(cache_key)
+    if cached is not None:
+        return finalize_cached_response(request, response, cached)
+
     result = await session.execute(select(Person).where(Person.nconst == nconst))
     person = result.scalar_one_or_none()
     if person is None:
@@ -34,7 +42,9 @@ async def get_person(
 
     payload = person.model_dump()
     payload["known_for_titles"] = known_for_titles
-    return payload
+    entry = (payload, make_etag(payload))
+    response_cache.set(cache_key, entry)
+    return finalize_cached_response(request, response, entry)
 
 
 @router.get("/people/{nconst}/credits", response_model=list[CreditItem])

@@ -22,6 +22,23 @@ from src.datasets import DATASET_TABLE_MAP
 logger = logging.getLogger(__name__)
 
 
+class CountingReader:
+    """Wrapper around a binary file-like object to count uncompressed bytes read."""
+
+    def __init__(self, file_obj):
+        self._file_obj = file_obj
+        self.bytes_read = 0
+
+    def read(self, size: int = -1) -> bytes:
+        chunk = self._file_obj.read(size)
+        if chunk:
+            self.bytes_read += len(chunk)
+        return chunk
+
+    def close(self) -> None:
+        self._file_obj.close()
+
+
 class IngestDataset(ABC):
     """
     Base class for IMDb dataset ingestion using COPY + staging tables.
@@ -65,11 +82,10 @@ class IngestDataset(ABC):
 
     @property
     def tsv_size(self) -> int:
-        """raw extracted file size in bytes"""
+        """raw extracted file size in bytes (or bytes streamed if not uncompressed)"""
         if self.tsv_path.exists():
             return self.tsv_path.stat().st_size
-
-        return 0
+        return getattr(self, "_raw_bytes_streamed", 0)
 
     @property
     def url(self) -> str:
@@ -81,6 +97,14 @@ class IngestDataset(ABC):
         """staging table"""
         dataset_slug = self.dataset_name.removesuffix(".tsv").replace(".", "_")
         return f"staging_{dataset_slug}"
+
+    def _open_data_stream(self) -> CountingReader:
+        """Open binary stream directly from cached tsv or stream from gz archive."""
+        if self.tsv_path.exists():
+            return CountingReader(open(self.tsv_path, "rb"))
+        if self.gz_path.exists():
+            return CountingReader(gzip.open(self.gz_path, "rb"))
+        raise FileNotFoundError(f"Neither {self.tsv_path} nor {self.gz_path} exists.")
 
     async def run(self) -> None:
         """run download and import"""
@@ -95,20 +119,41 @@ class IngestDataset(ABC):
         try:
             logger.info("import started dataset=%s", self.dataset_name)
             await self._download_if_needed()
-            await asyncio.to_thread(self._extract_if_needed)
 
             async with self.pool.acquire() as conn:
                 db_conn = cast(asyncpg.Connection, conn)
                 target_table = DATASET_TABLE_MAP.get(self.dataset_name)
                 try:
+                    temp_buffers = getattr(config, "IMPORT_TEMP_BUFFERS", "256MB")
+                    await db_conn.execute(f"SET temp_buffers = '{temp_buffers}'")
+
                     await self._drop_rebuild_indexes(db_conn)
                     async with conn.transaction():
                         await db_conn.execute("SET LOCAL synchronous_commit = off")
+                        work_mem = getattr(config, "IMPORT_WORK_MEM", "256MB")
+                        maint_mem = getattr(config, "IMPORT_MAINTENANCE_WORK_MEM", "2047MB")
+                        parallel_workers = getattr(config, "IMPORT_PARALLEL_WORKERS", 4)
+                        await db_conn.execute(f"SET LOCAL work_mem = '{work_mem}'")
+                        await db_conn.execute(f"SET LOCAL maintenance_work_mem = '{maint_mem}'")
+                        await db_conn.execute(f"SET LOCAL max_parallel_maintenance_workers = {parallel_workers}")
+
                         logger.info("ingest into temporary table staging_table=%s", self.staging_table)
                         await self.create_staging_table(db_conn)
 
-                        async for lines in self._read_tsv_in_chunks():
-                            await self.copy_chunk(db_conn, lines)
+                        stream = self._open_data_stream()
+                        try:
+                            await db_conn.copy_to_table(
+                                self.staging_table,
+                                source=stream,
+                                format="csv",
+                                delimiter="\t",
+                                null="\\N",
+                                quote="\b",
+                                header=True,
+                            )
+                            self._raw_bytes_streamed = stream.bytes_read
+                        finally:
+                            stream.close()
 
                         await db_conn.execute(f"ANALYZE {self.staging_table}")
                         staging_has_rows = await db_conn.fetchval(f"SELECT EXISTS (SELECT 1 FROM {self.staging_table})")
@@ -153,8 +198,8 @@ class IngestDataset(ABC):
             perf_counter() - start,
         )
 
-        if Path(self.gz_path).exists():
-            Path(self.gz_path).unlink()
+        if self.tsv_path.exists() and self.gz_path.exists():
+            self.gz_path.unlink()
 
     async def _is_already_imported(self) -> bool:
         """dataset has at least one completed import task row"""
@@ -294,10 +339,27 @@ class IngestDataset(ABC):
             await conn.execute(f'DROP INDEX IF EXISTS "{index_name}"')
 
     async def _create_rebuild_indexes(self, conn: asyncpg.Connection) -> None:
-        """Recreate the indexes dropped by `_drop_rebuild_indexes` in one pass."""
-        for index_name, ddl in self.REBUILD_INDEXES:
-            logger.info("rebuild index index=%s dataset=%s", index_name, self.dataset_name)
-            await conn.execute(ddl)
+        """Recreate the indexes dropped by `_drop_rebuild_indexes` (concurrently if multiple)."""
+        if not self.REBUILD_INDEXES:
+            return
+
+        if len(self.REBUILD_INDEXES) > 1 and self.pool:
+
+            async def _build(index_name: str, ddl: str) -> None:
+                async with self.pool.acquire() as c:
+                    db_c = cast(asyncpg.Connection, c)
+                    maint_mem = getattr(config, "IMPORT_MAINTENANCE_WORK_MEM", "2047MB")
+                    workers = getattr(config, "IMPORT_PARALLEL_WORKERS", 4)
+                    await db_c.execute(f"SET maintenance_work_mem = '{maint_mem}'")
+                    await db_c.execute(f"SET max_parallel_maintenance_workers = {workers}")
+                    logger.info("rebuild index concurrently index=%s dataset=%s", index_name, self.dataset_name)
+                    await db_c.execute(ddl)
+
+            await asyncio.gather(*(_build(idx, ddl) for idx, ddl in self.REBUILD_INDEXES))
+        else:
+            for index_name, ddl in self.REBUILD_INDEXES:
+                logger.info("rebuild index index=%s dataset=%s", index_name, self.dataset_name)
+                await conn.execute(ddl)
 
     @abstractmethod
     async def create_staging_table(self, conn: asyncpg.Connection) -> None:

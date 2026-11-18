@@ -48,11 +48,18 @@ class IngestTitleRatings(IngestDataset):
                 s.num_votes
             FROM {self.staging_table} s
             JOIN titles t ON t.tconst = s.tconst
-            ON CONFLICT (tconst) DO UPDATE
+            WHERE NOT EXISTS (
+                SELECT 1 FROM title_ratings tr WHERE tr.tconst = s.tconst
+            );
+
+            UPDATE title_ratings tr
             SET
-                average_rating = EXCLUDED.average_rating,
-                num_votes = EXCLUDED.num_votes
-            WHERE
-                title_ratings.average_rating IS DISTINCT FROM EXCLUDED.average_rating
-                OR title_ratings.num_votes IS DISTINCT FROM EXCLUDED.num_votes;
+                average_rating = s.average_rating,
+                num_votes = s.num_votes
+            FROM {self.staging_table} s
+            WHERE tr.tconst = s.tconst
+              AND (
+                tr.average_rating IS DISTINCT FROM s.average_rating
+                OR tr.num_votes IS DISTINCT FROM s.num_votes
+              );
             """)

@@ -93,19 +93,31 @@ class IngestTitleAkas(IngestDataset):
                 s.is_original
             FROM {self.staging_table} s
             JOIN titles t ON t.tconst = s.title_id
-            ON CONFLICT (title_id, ordering) DO UPDATE
+            WHERE NOT EXISTS (
+                SELECT 1 FROM title_akas ta
+                WHERE ta.title_id = s.title_id AND ta.ordering = s.ordering
+            );
+
+            UPDATE title_akas ta
             SET
-                title = EXCLUDED.title,
-                region = EXCLUDED.region,
-                language = EXCLUDED.language,
-                types = EXCLUDED.types,
-                attributes = EXCLUDED.attributes,
-                is_original = EXCLUDED.is_original
-            WHERE
-                title_akas.title IS DISTINCT FROM EXCLUDED.title
-                OR title_akas.region IS DISTINCT FROM EXCLUDED.region
-                OR title_akas.language IS DISTINCT FROM EXCLUDED.language
-                OR title_akas.types IS DISTINCT FROM EXCLUDED.types
-                OR title_akas.attributes IS DISTINCT FROM EXCLUDED.attributes
-                OR title_akas.is_original IS DISTINCT FROM EXCLUDED.is_original;
+                title = s.title,
+                region = s.region,
+                language = s.language,
+                types = CASE WHEN s.types IS NULL THEN NULL ELSE string_to_array(s.types, ',') END,
+                attributes = CASE WHEN s.attributes IS NULL THEN NULL ELSE string_to_array(s.attributes, ',') END,
+                is_original = s.is_original
+            FROM {self.staging_table} s
+            WHERE ta.title_id = s.title_id AND ta.ordering = s.ordering
+              AND (
+                ta.title IS DISTINCT FROM s.title
+                OR ta.region IS DISTINCT FROM s.region
+                OR ta.language IS DISTINCT FROM s.language
+                OR ta.types IS DISTINCT FROM (
+                    CASE WHEN s.types IS NULL THEN NULL ELSE string_to_array(s.types, ',') END
+                )
+                OR ta.attributes IS DISTINCT FROM (
+                    CASE WHEN s.attributes IS NULL THEN NULL ELSE string_to_array(s.attributes, ',') END
+                )
+                OR ta.is_original IS DISTINCT FROM s.is_original
+              );
             """)

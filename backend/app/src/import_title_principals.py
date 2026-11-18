@@ -91,15 +91,37 @@ class IngestTitlePrincipals(IngestDataset):
             FROM {self.staging_table} s
             JOIN titles t ON t.tconst = s.tconst
             JOIN people p ON p.nconst = s.nconst
-            ON CONFLICT (tconst, ordering) DO UPDATE
+            WHERE NOT EXISTS (
+                SELECT 1 FROM title_principals tp
+                WHERE tp.tconst = s.tconst AND tp.ordering = s.ordering
+            );
+
+            UPDATE title_principals tp
             SET
-                nconst = EXCLUDED.nconst,
-                category = EXCLUDED.category,
-                job = EXCLUDED.job,
-                characters = EXCLUDED.characters
-            WHERE
-                title_principals.nconst IS DISTINCT FROM EXCLUDED.nconst
-                OR title_principals.category IS DISTINCT FROM EXCLUDED.category
-                OR title_principals.job IS DISTINCT FROM EXCLUDED.job
-                OR title_principals.characters IS DISTINCT FROM EXCLUDED.characters;
+                nconst = s.nconst,
+                category = s.category,
+                job = s.job,
+                characters = CASE
+                    WHEN s.characters IS NULL THEN NULL
+                    ELSE (
+                        SELECT array_agg(value)
+                        FROM jsonb_array_elements_text(s.characters::jsonb)
+                    )
+                END
+            FROM {self.staging_table} s
+            WHERE tp.tconst = s.tconst AND tp.ordering = s.ordering
+              AND (
+                tp.nconst IS DISTINCT FROM s.nconst
+                OR tp.category IS DISTINCT FROM s.category
+                OR tp.job IS DISTINCT FROM s.job
+                OR tp.characters IS DISTINCT FROM (
+                    CASE
+                        WHEN s.characters IS NULL THEN NULL
+                        ELSE (
+                            SELECT array_agg(value)
+                            FROM jsonb_array_elements_text(s.characters::jsonb)
+                        )
+                    END
+                )
+              );
             """)

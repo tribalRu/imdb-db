@@ -69,13 +69,20 @@ class IngestTitleEpisodes(IngestDataset):
             FROM {self.staging_table} e
             JOIN titles t ON t.tconst = e.tconst
             JOIN titles p ON p.tconst = e.parent_tconst
-            ON CONFLICT (tconst) DO UPDATE
+            WHERE NOT EXISTS (
+                SELECT 1 FROM episodes ep WHERE ep.tconst = e.tconst
+            );
+
+            UPDATE episodes ep
             SET
-                parent_tconst = EXCLUDED.parent_tconst,
-                season_number = EXCLUDED.season_number,
-                episode_number = EXCLUDED.episode_number
-            WHERE
-                episodes.parent_tconst IS DISTINCT FROM EXCLUDED.parent_tconst
-                OR episodes.season_number IS DISTINCT FROM EXCLUDED.season_number
-                OR episodes.episode_number IS DISTINCT FROM EXCLUDED.episode_number;
+                parent_tconst = e.parent_tconst,
+                season_number = e.season_number,
+                episode_number = e.episode_number
+            FROM {self.staging_table} e
+            WHERE ep.tconst = e.tconst
+              AND (
+                ep.parent_tconst IS DISTINCT FROM e.parent_tconst
+                OR ep.season_number IS DISTINCT FROM e.season_number
+                OR ep.episode_number IS DISTINCT FROM e.episode_number
+              );
             """)

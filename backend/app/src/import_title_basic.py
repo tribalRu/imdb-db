@@ -90,33 +90,40 @@ class IngestTitleBasics(IngestDataset):
                 genres
             )
             SELECT
-                tconst,
-                title_type,
-                primary_title,
-                NULLIF(original_title, ''),
-                is_adult,
-                start_year,
-                end_year,
-                runtime_minutes,
-                string_to_array(genres, ',')
-            FROM {self.staging_table}
-            ON CONFLICT (tconst) DO UPDATE
+                s.tconst,
+                s.title_type,
+                s.primary_title,
+                NULLIF(s.original_title, ''),
+                s.is_adult,
+                s.start_year,
+                s.end_year,
+                s.runtime_minutes,
+                string_to_array(s.genres, ',')
+            FROM {self.staging_table} s
+            WHERE NOT EXISTS (
+                SELECT 1 FROM titles t WHERE t.tconst = s.tconst
+            );
+
+            UPDATE titles t
             SET
-                title_type = EXCLUDED.title_type,
-                primary_title = EXCLUDED.primary_title,
-                original_title = EXCLUDED.original_title,
-                is_adult = EXCLUDED.is_adult,
-                start_year = EXCLUDED.start_year,
-                end_year = EXCLUDED.end_year,
-                runtime_minutes = EXCLUDED.runtime_minutes,
-                genres = EXCLUDED.genres
-            WHERE
-                titles.title_type IS DISTINCT FROM EXCLUDED.title_type
-                OR titles.primary_title IS DISTINCT FROM EXCLUDED.primary_title
-                OR titles.original_title IS DISTINCT FROM EXCLUDED.original_title
-                OR titles.is_adult IS DISTINCT FROM EXCLUDED.is_adult
-                OR titles.start_year IS DISTINCT FROM EXCLUDED.start_year
-                OR titles.end_year IS DISTINCT FROM EXCLUDED.end_year
-                OR titles.runtime_minutes IS DISTINCT FROM EXCLUDED.runtime_minutes
-                OR titles.genres IS DISTINCT FROM EXCLUDED.genres
+                title_type = s.title_type,
+                primary_title = s.primary_title,
+                original_title = NULLIF(s.original_title, ''),
+                is_adult = s.is_adult,
+                start_year = s.start_year,
+                end_year = s.end_year,
+                runtime_minutes = s.runtime_minutes,
+                genres = string_to_array(s.genres, ',')
+            FROM {self.staging_table} s
+            WHERE t.tconst = s.tconst
+              AND (
+                t.title_type IS DISTINCT FROM s.title_type
+                OR t.primary_title IS DISTINCT FROM s.primary_title
+                OR t.original_title IS DISTINCT FROM NULLIF(s.original_title, '')
+                OR t.is_adult IS DISTINCT FROM s.is_adult
+                OR t.start_year IS DISTINCT FROM s.start_year
+                OR t.end_year IS DISTINCT FROM s.end_year
+                OR t.runtime_minutes IS DISTINCT FROM s.runtime_minutes
+                OR t.genres IS DISTINCT FROM string_to_array(s.genres, ',')
+              );
             """)

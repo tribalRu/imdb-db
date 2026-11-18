@@ -68,24 +68,31 @@ class IngestNameBasics(IngestDataset):
                 known_for_titles
             )
             SELECT
-                nconst,
-                primary_name,
-                birth_year,
-                death_year,
-                string_to_array(primary_professions, ','),
-                string_to_array(known_for_titles, ',')
-            FROM {self.staging_table}
-            ON CONFLICT (nconst) DO UPDATE
+                s.nconst,
+                s.primary_name,
+                s.birth_year,
+                s.death_year,
+                string_to_array(s.primary_professions, ','),
+                string_to_array(s.known_for_titles, ',')
+            FROM {self.staging_table} s
+            WHERE NOT EXISTS (
+                SELECT 1 FROM people p WHERE p.nconst = s.nconst
+            );
+
+            UPDATE people p
             SET
-                primary_name = EXCLUDED.primary_name,
-                birth_year = EXCLUDED.birth_year,
-                death_year = EXCLUDED.death_year,
-                primary_professions = EXCLUDED.primary_professions,
-                known_for_titles = EXCLUDED.known_for_titles
-            WHERE
-                people.primary_name IS DISTINCT FROM EXCLUDED.primary_name
-                OR people.birth_year IS DISTINCT FROM EXCLUDED.birth_year
-                OR people.death_year IS DISTINCT FROM EXCLUDED.death_year
-                OR people.primary_professions IS DISTINCT FROM EXCLUDED.primary_professions
-                OR people.known_for_titles IS DISTINCT FROM EXCLUDED.known_for_titles;
+                primary_name = s.primary_name,
+                birth_year = s.birth_year,
+                death_year = s.death_year,
+                primary_professions = string_to_array(s.primary_professions, ','),
+                known_for_titles = string_to_array(s.known_for_titles, ',')
+            FROM {self.staging_table} s
+            WHERE p.nconst = s.nconst
+              AND (
+                p.primary_name IS DISTINCT FROM s.primary_name
+                OR p.birth_year IS DISTINCT FROM s.birth_year
+                OR p.death_year IS DISTINCT FROM s.death_year
+                OR p.primary_professions IS DISTINCT FROM string_to_array(s.primary_professions, ',')
+                OR p.known_for_titles IS DISTINCT FROM string_to_array(s.known_for_titles, ',')
+              );
             """)

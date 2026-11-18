@@ -156,6 +156,15 @@ class IngestProgressStageStep(BaseModel):
     percent: int = 0
 
 
+class IngestIndexItem(BaseModel):
+    """status of a single index in the dataset rebuild list"""
+
+    name: str
+    status: str
+    phase: str | None = None
+    duration: float | None = None
+
+
 class IngestActiveDetail(BaseModel):
     """detailed progress metrics for the currently running dataset"""
 
@@ -167,6 +176,12 @@ class IngestActiveDetail(BaseModel):
     percent: int = 0
     speed_mb_s: float = 0.0
     eta_seconds: float | None = None
+    substage: str | None = None
+    rows_inserted: int | None = None
+    rows_updated: int | None = None
+    index_total: int | None = None
+    index_completed: int | None = None
+    index_items: list[IngestIndexItem] = []
 
 
 class IngestProgressResponse(BaseModel):

@@ -38,7 +38,9 @@ class IngestTitlePrincipals(IngestDataset):
         return await self._is_table_empty(conn, "title_principals")
 
     async def _insert_first_import(self, conn: asyncpg.Connection) -> None:
-        await conn.execute(f"""
+        await self.execute_initial_insert(
+            conn,
+            f"""
             INSERT INTO title_principals (
                 tconst,
                 ordering,
@@ -63,10 +65,13 @@ class IngestTitlePrincipals(IngestDataset):
             FROM {self.staging_table} s
             JOIN titles t ON t.tconst = s.tconst
             JOIN people p ON p.nconst = s.nconst
-            """)
+            """,
+        )
 
     async def _upsert_existing(self, conn: asyncpg.Connection) -> None:
-        await conn.execute(f"""
+        await self.execute_split_upsert(
+            conn,
+            insert_sql=f"""
             INSERT INTO title_principals (
                 tconst,
                 ordering,
@@ -94,8 +99,9 @@ class IngestTitlePrincipals(IngestDataset):
             WHERE NOT EXISTS (
                 SELECT 1 FROM title_principals tp
                 WHERE tp.tconst = s.tconst AND tp.ordering = s.ordering
-            );
-
+            )
+            """,
+            update_sql=f"""
             UPDATE title_principals tp
             SET
                 nconst = s.nconst,
@@ -123,5 +129,6 @@ class IngestTitlePrincipals(IngestDataset):
                         )
                     END
                 )
-              );
-            """)
+              )
+            """,
+        )

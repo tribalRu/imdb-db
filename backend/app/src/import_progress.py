@@ -55,6 +55,12 @@ class ImportProgress:
                 "percent": 0,
                 "speed_mb_s": 0.0,
                 "eta_seconds": None,
+                "substage": None,
+                "rows_inserted": None,
+                "rows_updated": None,
+                "index_total": None,
+                "index_completed": None,
+                "index_items": [],
             }
 
     def update_active_detail(
@@ -65,31 +71,54 @@ class ImportProgress:
         bytes_total: int = 0,
         uncompressed_bytes: int = 0,
         detail: str = "",
+        percent: int | None = None,
+        speed_mb_s: float | None = None,
+        eta_seconds: float | None = None,
+        substage: str | None = None,
+        rows_inserted: int | None = None,
+        rows_updated: int | None = None,
+        index_total: int | None = None,
+        index_completed: int | None = None,
+        index_items: list[dict[str, Any]] | None = None,
     ) -> None:
+        existing = self.active_details.get(dataset_name, {})
         start_t = self.stage_start_times.get(f"{dataset_name}:{stage}", time.time())
         elapsed = max(0.1, time.time() - start_t)
 
-        speed_mb_s = 0.0
-        if bytes_current > 0 and elapsed > 0.5:
-            speed_mb_s = round((bytes_current / elapsed) / (1024 * 1024), 1)
+        if speed_mb_s is None:
+            speed_mb_s = 0.0
+            if bytes_current > 0 and elapsed > 0.5:
+                speed_mb_s = round((bytes_current / elapsed) / (1024 * 1024), 1)
 
-        percent = 0
+        calc_percent = 0
         if bytes_total > 0:
-            percent = min(100, int((bytes_current / bytes_total) * 100))
+            calc_percent = min(100, int((bytes_current / bytes_total) * 100))
+        elif percent is not None:
+            calc_percent = percent
+        else:
+            calc_percent = existing.get("percent", 0)
 
-        eta_seconds = None
-        if speed_mb_s > 0 and bytes_total > bytes_current:
-            eta_seconds = round((bytes_total - bytes_current) / (speed_mb_s * 1024 * 1024), 1)
+        if eta_seconds is None:
+            if speed_mb_s > 0 and bytes_total > bytes_current:
+                eta_seconds = round((bytes_total - bytes_current) / (speed_mb_s * 1024 * 1024), 1)
+            else:
+                eta_seconds = existing.get("eta_seconds")
 
         self.active_details[dataset_name] = {
             "stage": stage,
-            "detail": detail or stage,
-            "bytes_current": bytes_current,
-            "bytes_total": bytes_total,
-            "uncompressed_bytes": uncompressed_bytes,
-            "percent": percent,
+            "detail": detail or existing.get("detail", stage),
+            "bytes_current": bytes_current or existing.get("bytes_current", 0),
+            "bytes_total": bytes_total or existing.get("bytes_total", 0),
+            "uncompressed_bytes": uncompressed_bytes or existing.get("uncompressed_bytes", 0),
+            "percent": calc_percent,
             "speed_mb_s": speed_mb_s,
             "eta_seconds": eta_seconds,
+            "substage": substage if substage is not None else existing.get("substage"),
+            "rows_inserted": rows_inserted if rows_inserted is not None else existing.get("rows_inserted"),
+            "rows_updated": rows_updated if rows_updated is not None else existing.get("rows_updated"),
+            "index_total": index_total if index_total is not None else existing.get("index_total"),
+            "index_completed": index_completed if index_completed is not None else existing.get("index_completed"),
+            "index_items": index_items if index_items is not None else existing.get("index_items", []),
         }
 
     def complete_dataset(self, dataset_name: str, duration: float) -> None:

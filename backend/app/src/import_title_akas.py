@@ -34,7 +34,9 @@ class IngestTitleAkas(IngestDataset):
         return await self._is_table_empty(conn, "title_akas")
 
     async def _insert_first_import(self, conn: asyncpg.Connection) -> None:
-        await conn.execute(f"""
+        await self.execute_initial_insert(
+            conn,
+            f"""
             INSERT INTO title_akas (
                 title_id,
                 ordering,
@@ -62,10 +64,13 @@ class IngestTitleAkas(IngestDataset):
                 s.is_original
             FROM {self.staging_table} s
             JOIN titles t ON t.tconst = s.title_id
-            """)
+            """,
+        )
 
     async def _upsert_existing(self, conn: asyncpg.Connection) -> None:
-        await conn.execute(f"""
+        await self.execute_split_upsert(
+            conn,
+            insert_sql=f"""
             INSERT INTO title_akas (
                 title_id,
                 ordering,
@@ -96,8 +101,9 @@ class IngestTitleAkas(IngestDataset):
             WHERE NOT EXISTS (
                 SELECT 1 FROM title_akas ta
                 WHERE ta.title_id = s.title_id AND ta.ordering = s.ordering
-            );
-
+            )
+            """,
+            update_sql=f"""
             UPDATE title_akas ta
             SET
                 title = s.title,
@@ -119,5 +125,6 @@ class IngestTitleAkas(IngestDataset):
                     CASE WHEN s.attributes IS NULL THEN NULL ELSE string_to_array(s.attributes, ',') END
                 )
                 OR ta.is_original IS DISTINCT FROM s.is_original
-              );
-            """)
+              )
+            """,
+        )

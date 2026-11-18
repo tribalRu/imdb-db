@@ -73,6 +73,38 @@ def test_import_progress_lifecycle():
     tracker.set_stage("title.basics.tsv", "copying")
     assert "title.basics.tsv" in tracker.active_datasets
 
+    tracker.update_active_detail(
+        "title.basics.tsv",
+        stage="merging",
+        substage="updating",
+        percent=65,
+        rows_inserted=4200,
+        rows_updated=150,
+        detail="Phase 2/2: Updating modified records (+4,200 inserted)...",
+    )
+    detail_state = tracker.to_dict()["current_detail"]
+    assert detail_state is not None
+    assert detail_state["rows_inserted"] == 4200
+    assert detail_state["rows_updated"] == 150
+    assert detail_state["percent"] == 65
+
+    tracker.update_active_detail(
+        "title.basics.tsv",
+        stage="indexing",
+        percent=50,
+        index_total=4,
+        index_completed=2,
+        index_items=[
+            {"name": "ix_1", "status": "completed", "duration": 1.1},
+            {"name": "ix_2", "status": "running"},
+        ],
+        detail="Rebuilt 2/4 indexes",
+    )
+    detail_state = tracker.to_dict()["current_detail"]
+    assert detail_state["index_total"] == 4
+    assert detail_state["index_completed"] == 2
+    assert len(detail_state["index_items"]) == 2
+
     tracker.complete_dataset("title.basics.tsv", duration=12.5)
     state = tracker.to_dict()
     assert state["completed_count"] == 1

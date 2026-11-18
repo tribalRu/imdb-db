@@ -38,7 +38,9 @@ class IngestNameBasics(IngestDataset):
         return await self._is_table_empty(conn, "people")
 
     async def _insert_first_import(self, conn: asyncpg.Connection) -> None:
-        await conn.execute(f"""
+        await self.execute_initial_insert(
+            conn,
+            f"""
             INSERT INTO people (
                 nconst,
                 primary_name,
@@ -55,10 +57,13 @@ class IngestNameBasics(IngestDataset):
                 string_to_array(primary_professions, ','),
                 string_to_array(known_for_titles, ',')
             FROM {self.staging_table}
-            """)
+            """,
+        )
 
     async def _upsert_existing(self, conn: asyncpg.Connection) -> None:
-        await conn.execute(f"""
+        await self.execute_split_upsert(
+            conn,
+            insert_sql=f"""
             INSERT INTO people (
                 nconst,
                 primary_name,
@@ -77,8 +82,9 @@ class IngestNameBasics(IngestDataset):
             FROM {self.staging_table} s
             WHERE NOT EXISTS (
                 SELECT 1 FROM people p WHERE p.nconst = s.nconst
-            );
-
+            )
+            """,
+            update_sql=f"""
             UPDATE people p
             SET
                 primary_name = s.primary_name,
@@ -94,5 +100,6 @@ class IngestNameBasics(IngestDataset):
                 OR p.death_year IS DISTINCT FROM s.death_year
                 OR p.primary_professions IS DISTINCT FROM string_to_array(s.primary_professions, ',')
                 OR p.known_for_titles IS DISTINCT FROM string_to_array(s.known_for_titles, ',')
-              );
-            """)
+              )
+            """,
+        )

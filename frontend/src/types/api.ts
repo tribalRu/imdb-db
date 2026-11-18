@@ -50,6 +50,13 @@ export interface IngestProgressStageStep {
   percent: number;
 }
 
+export interface IngestIndexItem {
+  name: string;
+  status: "queued" | "running" | "completed" | "failed";
+  phase?: string | null;
+  duration?: number | null;
+}
+
 export interface IngestActiveDetail {
   stage: string;
   detail: string;
@@ -59,6 +66,12 @@ export interface IngestActiveDetail {
   percent: number;
   speed_mb_s: number;
   eta_seconds: number | null;
+  substage?: string | null;
+  rows_inserted?: number | null;
+  rows_updated?: number | null;
+  index_total?: number | null;
+  index_completed?: number | null;
+  index_items?: IngestIndexItem[];
 }
 
 export interface IngestProgressData {

@@ -204,7 +204,148 @@ export function IngestProgress({
             </div>
 
             {/* Granular Byte / Stage Progress Bar */}
-            {detail && detail.bytes_total > 0 ? (
+            {detail && detail.stage === "merging" ? (
+              <div className="flex flex-col gap-2 pt-1">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-300">
+                  <div className="flex items-center gap-2">
+                    <svg
+                      className="h-3.5 w-3.5 animate-spin text-amber-400"
+                      xmlns="http://www.w3.org/2000/svg"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      />
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                      />
+                    </svg>
+                    <span className="font-medium text-zinc-200">
+                      {detail.detail}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 font-mono text-xs">
+                    {detail.rows_inserted !== null &&
+                    detail.rows_inserted !== undefined ? (
+                      <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-emerald-300">
+                        +{detail.rows_inserted.toLocaleString()} inserted
+                      </span>
+                    ) : null}
+                    {detail.rows_updated !== null &&
+                    detail.rows_updated !== undefined &&
+                    detail.rows_updated > 0 ? (
+                      <span className="rounded border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-sky-300">
+                        ~{detail.rows_updated.toLocaleString()} updated
+                      </span>
+                    ) : null}
+                    <span className="font-semibold text-amber-300">
+                      {detail.percent}%
+                    </span>
+                  </div>
+                </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
+                  <div
+                    className="h-full bg-gradient-to-r from-amber-500 via-amber-400 to-emerald-400 transition-all duration-300"
+                    style={{ width: `${Math.max(detail.percent, 3)}%` }}
+                  />
+                </div>
+              </div>
+            ) : detail && detail.stage === "indexing" ? (
+              <div className="flex flex-col gap-2.5 pt-1">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-300">
+                  <div className="flex items-center gap-2">
+                    <svg
+                      className="h-3.5 w-3.5 animate-spin text-amber-400"
+                      xmlns="http://www.w3.org/2000/svg"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      />
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                      />
+                    </svg>
+                    <span className="truncate font-medium text-zinc-200">
+                      {detail.detail}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 font-mono text-xs">
+                    {detail.index_total ? (
+                      <span className="text-zinc-400">
+                        Indexes:{" "}
+                        <strong className="text-zinc-200">
+                          {detail.index_completed ?? 0} / {detail.index_total}
+                        </strong>
+                      </span>
+                    ) : null}
+                    <span className="font-semibold text-amber-300">
+                      {detail.percent}%
+                    </span>
+                  </div>
+                </div>
+
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
+                  <div
+                    className="h-full bg-gradient-to-r from-amber-500 to-emerald-400 transition-all duration-300"
+                    style={{ width: `${Math.max(detail.percent, 3)}%` }}
+                  />
+                </div>
+
+                {detail.index_items && detail.index_items.length > 0 ? (
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {detail.index_items.map((idxItem) => {
+                      const isDone = idxItem.status === "completed";
+                      const isRunning = idxItem.status === "running";
+                      return (
+                        <div
+                          key={idxItem.name}
+                          className={`flex items-center gap-1.5 rounded border px-2 py-0.5 font-mono text-[11px] transition ${
+                            isRunning
+                              ? "border-amber-500/70 bg-amber-500/10 text-amber-200"
+                              : isDone
+                                ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-300"
+                                : "border-zinc-800 bg-zinc-950/40 text-zinc-500"
+                          }`}
+                        >
+                          {isRunning ? (
+                            <span className="inline-block h-2 w-2 animate-ping rounded-full bg-amber-400" />
+                          ) : isDone ? (
+                            <span className="font-bold text-emerald-400">
+                              ✓
+                            </span>
+                          ) : (
+                            <span className="text-zinc-600">○</span>
+                          )}
+                          <span>{idxItem.name}</span>
+                          {idxItem.duration ? (
+                            <span className="text-[10px] text-zinc-400">
+                              ({formatDuration(idxItem.duration)})
+                            </span>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            ) : detail && detail.bytes_total > 0 ? (
               <div className="flex flex-col gap-1.5 pt-1">
                 <div className="flex justify-between text-xs text-zinc-300">
                   <span className="text-zinc-400 truncate pr-2">

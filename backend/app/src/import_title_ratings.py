@@ -29,7 +29,9 @@ class IngestTitleRatings(IngestDataset):
         return await self._is_table_empty(conn, "title_ratings")
 
     async def _insert_first_import(self, conn: asyncpg.Connection) -> None:
-        await conn.execute(f"""
+        await self.execute_initial_insert(
+            conn,
+            f"""
             INSERT INTO title_ratings (tconst, average_rating, num_votes)
             SELECT
                 s.tconst,
@@ -37,10 +39,13 @@ class IngestTitleRatings(IngestDataset):
                 s.num_votes
             FROM {self.staging_table} s
             JOIN titles t ON t.tconst = s.tconst
-            """)
+            """,
+        )
 
     async def _upsert_existing(self, conn: asyncpg.Connection) -> None:
-        await conn.execute(f"""
+        await self.execute_split_upsert(
+            conn,
+            insert_sql=f"""
             INSERT INTO title_ratings (tconst, average_rating, num_votes)
             SELECT
                 s.tconst,
@@ -50,8 +55,9 @@ class IngestTitleRatings(IngestDataset):
             JOIN titles t ON t.tconst = s.tconst
             WHERE NOT EXISTS (
                 SELECT 1 FROM title_ratings tr WHERE tr.tconst = s.tconst
-            );
-
+            )
+            """,
+            update_sql=f"""
             UPDATE title_ratings tr
             SET
                 average_rating = s.average_rating,
@@ -61,5 +67,6 @@ class IngestTitleRatings(IngestDataset):
               AND (
                 tr.average_rating IS DISTINCT FROM s.average_rating
                 OR tr.num_votes IS DISTINCT FROM s.num_votes
-              );
-            """)
+              )
+            """,
+        )

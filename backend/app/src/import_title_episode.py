@@ -36,7 +36,9 @@ class IngestTitleEpisodes(IngestDataset):
         return await self._is_table_empty(conn, "episodes")
 
     async def _insert_first_import(self, conn: asyncpg.Connection) -> None:
-        await conn.execute(f"""
+        await self.execute_initial_insert(
+            conn,
+            f"""
             INSERT INTO episodes (
                 tconst,
                 parent_tconst,
@@ -51,10 +53,13 @@ class IngestTitleEpisodes(IngestDataset):
             FROM {self.staging_table} e
             JOIN titles t ON t.tconst = e.tconst
             JOIN titles p ON p.tconst = e.parent_tconst
-            """)
+            """,
+        )
 
     async def _upsert_existing(self, conn: asyncpg.Connection) -> None:
-        await conn.execute(f"""
+        await self.execute_split_upsert(
+            conn,
+            insert_sql=f"""
             INSERT INTO episodes (
                 tconst,
                 parent_tconst,
@@ -71,8 +76,9 @@ class IngestTitleEpisodes(IngestDataset):
             JOIN titles p ON p.tconst = e.parent_tconst
             WHERE NOT EXISTS (
                 SELECT 1 FROM episodes ep WHERE ep.tconst = e.tconst
-            );
-
+            )
+            """,
+            update_sql=f"""
             UPDATE episodes ep
             SET
                 parent_tconst = e.parent_tconst,
@@ -84,5 +90,6 @@ class IngestTitleEpisodes(IngestDataset):
                 ep.parent_tconst IS DISTINCT FROM e.parent_tconst
                 OR ep.season_number IS DISTINCT FROM e.season_number
                 OR ep.episode_number IS DISTINCT FROM e.episode_number
-              );
-            """)
+              )
+            """,
+        )

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from time import perf_counter
-from typing import AsyncIterator, ClassVar, cast
+from typing import Any, AsyncIterator, ClassVar, cast
 
 import aiohttp
 import asyncpg
@@ -22,6 +22,16 @@ from src.datasets import DATASET_TABLE_MAP
 from src.import_progress import progress_tracker
 
 logger = logging.getLogger(__name__)
+
+
+def parse_pg_tag_count(tag: str | None) -> int:
+    """Parse row count from PostgreSQL command tag (e.g. 'INSERT 0 45000' -> 45000, 'UPDATE 120' -> 120)."""
+    if not tag:
+        return 0
+    try:
+        return int(tag.strip().split()[-1])
+    except Exception:
+        return 0
 
 
 class CountingReader:
@@ -195,10 +205,16 @@ class IngestDataset(ABC):
                         await db_conn.execute(f"ANALYZE {self.staging_table}")
                         staging_has_rows = await db_conn.fetchval(f"SELECT EXISTS (SELECT 1 FROM {self.staging_table})")
                         logger.info("merge temporary table into final table")
+                        staging_rows = (
+                            await db_conn.fetchval(
+                                f"SELECT reltuples::bigint FROM pg_class WHERE relname = '{self.staging_table}'"
+                            )
+                            or 0
+                        )
                         progress_tracker.set_stage(
                             self.dataset_name,
                             "merging",
-                            detail="Merging staging into final table (split upsert)",
+                            detail=f"Merging staging into final table ({max(0, staging_rows):,} rows)...",
                         )
                         await self.merge_into_final(db_conn)
 
@@ -400,28 +416,222 @@ class IngestDataset(ABC):
             logger.info("drop index before bulk load index=%s dataset=%s", index_name, self.dataset_name)
             await conn.execute(f'DROP INDEX IF EXISTS "{index_name}"')
 
+    async def _monitor_pg_index_progress(
+        self,
+        stop_event: asyncio.Event,
+        total_indexes: int,
+        index_items: list[dict[str, Any]],
+    ) -> None:
+        if not self.pool:
+            return
+        while not stop_event.is_set():
+            try:
+                async with self.pool.acquire() as mon_conn:
+                    db_mon = cast(asyncpg.Connection, mon_conn)
+                    rows = await db_mon.fetch("""
+                        SELECT phase, blocks_total, blocks_done, tuples_total, tuples_done
+                        FROM pg_stat_progress_create_index
+                        WHERE datname = current_database()
+                        LIMIT 1
+                        """)
+                    if rows and not stop_event.is_set():
+                        r = rows[0]
+                        phase = r["phase"]
+                        blocks_total = r["blocks_total"] or 0
+                        blocks_done = r["blocks_done"] or 0
+                        pct_str = ""
+                        sub_pct = 0.3
+                        if blocks_total > 0:
+                            pct_val = int((blocks_done / blocks_total) * 100)
+                            pct_str = f" ({pct_val}% blocks)"
+                            sub_pct = pct_val / 100
+
+                        done_count = sum(1 for it in index_items if it["status"] == "completed")
+                        running_names = [it["name"] for it in index_items if it["status"] == "running"]
+                        current_name = running_names[0] if running_names else ""
+                        overall_pct = int(((done_count + sub_pct) / total_indexes) * 100)
+                        overall_pct = max(0, min(99, overall_pct))
+
+                        detail_text = (
+                            f"Building {current_name}: {phase}{pct_str}"
+                            if current_name
+                            else f"Building indexes: {phase}{pct_str}"
+                        )
+                        progress_tracker.update_active_detail(
+                            self.dataset_name,
+                            stage="indexing",
+                            index_total=total_indexes,
+                            index_completed=done_count,
+                            index_items=index_items,
+                            percent=overall_pct,
+                            detail=detail_text,
+                        )
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=0.4)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _build_single_rebuild_index(
+        self,
+        index_name: str,
+        ddl: str,
+        total_indexes: int,
+        index_items: list[dict[str, Any]],
+        conn: asyncpg.Connection | None = None,
+    ) -> None:
+        for it in index_items:
+            if it["name"] == index_name:
+                it["status"] = "running"
+        idx_start = time.time()
+
+        if conn is None and self.pool:
+            async with self.pool.acquire() as c:
+                db_c = cast(asyncpg.Connection, c)
+                maint_mem = getattr(config, "IMPORT_MAINTENANCE_WORK_MEM", "2047MB")
+                workers = getattr(config, "IMPORT_PARALLEL_WORKERS", 4)
+                await db_c.execute(f"SET maintenance_work_mem = '{maint_mem}'")
+                await db_c.execute(f"SET max_parallel_maintenance_workers = {workers}")
+                logger.info("rebuild index concurrently index=%s dataset=%s", index_name, self.dataset_name)
+                await db_c.execute(ddl)
+        elif conn is not None:
+            logger.info("rebuild index index=%s dataset=%s", index_name, self.dataset_name)
+            await conn.execute(ddl)
+
+        dur = time.time() - idx_start
+        for it in index_items:
+            if it["name"] == index_name:
+                it["status"] = "completed"
+                it["duration"] = round(dur, 2)
+
+        done_count = sum(1 for it in index_items if it["status"] == "completed")
+        overall_pct = int((done_count / total_indexes) * 100)
+        progress_tracker.update_active_detail(
+            self.dataset_name,
+            stage="indexing",
+            index_total=total_indexes,
+            index_completed=done_count,
+            index_items=index_items,
+            percent=overall_pct,
+            detail=f"Rebuilt {done_count}/{total_indexes} indexes ({index_name} in {round(dur, 1)}s)",
+        )
+
     async def _create_rebuild_indexes(self, conn: asyncpg.Connection) -> None:
         """Recreate the indexes dropped by `_drop_rebuild_indexes` (concurrently if multiple)."""
         if not self.REBUILD_INDEXES:
+            progress_tracker.update_active_detail(
+                self.dataset_name,
+                stage="indexing",
+                index_total=0,
+                index_completed=0,
+                index_items=[],
+                percent=100,
+                detail="No rebuild indexes required.",
+            )
             return
 
-        if len(self.REBUILD_INDEXES) > 1 and self.pool:
+        total_indexes = len(self.REBUILD_INDEXES)
+        index_items: list[dict[str, Any]] = [
+            {"name": idx, "status": "queued", "phase": None, "duration": None} for idx, _ in self.REBUILD_INDEXES
+        ]
 
-            async def _build(index_name: str, ddl: str) -> None:
-                async with self.pool.acquire() as c:
-                    db_c = cast(asyncpg.Connection, c)
-                    maint_mem = getattr(config, "IMPORT_MAINTENANCE_WORK_MEM", "2047MB")
-                    workers = getattr(config, "IMPORT_PARALLEL_WORKERS", 4)
-                    await db_c.execute(f"SET maintenance_work_mem = '{maint_mem}'")
-                    await db_c.execute(f"SET max_parallel_maintenance_workers = {workers}")
-                    logger.info("rebuild index concurrently index=%s dataset=%s", index_name, self.dataset_name)
-                    await db_c.execute(ddl)
+        progress_tracker.update_active_detail(
+            self.dataset_name,
+            stage="indexing",
+            index_total=total_indexes,
+            index_completed=0,
+            index_items=index_items,
+            percent=0,
+            detail=f"Rebuilding {total_indexes} indexes...",
+        )
 
-            await asyncio.gather(*(_build(idx, ddl) for idx, ddl in self.REBUILD_INDEXES))
-        else:
-            for index_name, ddl in self.REBUILD_INDEXES:
-                logger.info("rebuild index index=%s dataset=%s", index_name, self.dataset_name)
-                await conn.execute(ddl)
+        stop_event = asyncio.Event()
+        monitor_task = asyncio.create_task(self._monitor_pg_index_progress(stop_event, total_indexes, index_items))
+
+        try:
+            if total_indexes > 1 and self.pool:
+                tasks = [
+                    self._build_single_rebuild_index(idx, ddl, total_indexes, index_items)
+                    for idx, ddl in self.REBUILD_INDEXES
+                ]
+                await asyncio.gather(*tasks)
+            else:
+                for index_name, ddl in self.REBUILD_INDEXES:
+                    await self._build_single_rebuild_index(index_name, ddl, total_indexes, index_items, conn=conn)
+        finally:
+            stop_event.set()
+            await monitor_task
+
+        progress_tracker.update_active_detail(
+            self.dataset_name,
+            stage="indexing",
+            index_total=total_indexes,
+            index_completed=total_indexes,
+            index_items=index_items,
+            percent=100,
+            detail=f"Rebuilt all {total_indexes} indexes successfully.",
+        )
+
+    async def execute_initial_insert(self, conn: asyncpg.Connection, insert_sql: str) -> None:
+        """Helper to run initial bulk insert with progress tracking."""
+        progress_tracker.update_active_detail(
+            self.dataset_name,
+            stage="merging",
+            substage="inserting_initial",
+            percent=30,
+            detail="Bulk inserting initial dataset records...",
+        )
+        tag = await conn.execute(insert_sql)
+        inserted = parse_pg_tag_count(tag)
+        progress_tracker.update_active_detail(
+            self.dataset_name,
+            stage="merging",
+            substage="completed",
+            percent=100,
+            rows_inserted=inserted,
+            rows_updated=0,
+            detail=f"Initial insert complete: {inserted:,} rows",
+        )
+
+    async def execute_split_upsert(
+        self,
+        conn: asyncpg.Connection,
+        insert_sql: str,
+        update_sql: str,
+    ) -> None:
+        """Helper to run split upsert (insert where not exists + update where is distinct) with progress tracking."""
+        progress_tracker.update_active_detail(
+            self.dataset_name,
+            stage="merging",
+            substage="inserting",
+            percent=25,
+            detail="Phase 1/2: Inserting new records (INSERT WHERE NOT EXISTS)...",
+        )
+        tag_insert = await conn.execute(insert_sql)
+        inserted = parse_pg_tag_count(tag_insert)
+
+        progress_tracker.update_active_detail(
+            self.dataset_name,
+            stage="merging",
+            substage="updating",
+            percent=65,
+            rows_inserted=inserted,
+            rows_updated=0,
+            detail=f"Phase 2/2: Updating modified records (+{inserted:,} inserted)...",
+        )
+        tag_update = await conn.execute(update_sql)
+        updated = parse_pg_tag_count(tag_update)
+
+        progress_tracker.update_active_detail(
+            self.dataset_name,
+            stage="merging",
+            substage="completed",
+            percent=100,
+            rows_inserted=inserted,
+            rows_updated=updated,
+            detail=f"Merge complete: +{inserted:,} inserted, {updated:,} updated",
+        )
 
     @abstractmethod
     async def create_staging_table(self, conn: asyncpg.Connection) -> None:

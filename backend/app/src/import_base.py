@@ -4,6 +4,7 @@ import asyncio
 import gzip
 import logging
 import shutil
+import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from io import BytesIO
@@ -24,16 +25,28 @@ logger = logging.getLogger(__name__)
 
 
 class CountingReader:
-    """Wrapper around a binary file-like object to count uncompressed bytes read."""
+    """Wrapper around a binary file-like object to count uncompressed bytes read and report live progress."""
 
-    def __init__(self, file_obj):
+    def __init__(self, file_obj, total_bytes: int = 0, on_progress=None):
         self._file_obj = file_obj
+        self.total_bytes = total_bytes
         self.bytes_read = 0
+        self._on_progress = on_progress
+        self._last_report = 0.0
 
     def read(self, size: int = -1) -> bytes:
         chunk = self._file_obj.read(size)
         if chunk:
             self.bytes_read += len(chunk)
+            now = time.monotonic()
+            if self._on_progress and now - self._last_report >= 0.2:
+                self._last_report = now
+                fileobj = getattr(self._file_obj, "fileobj", self._file_obj)
+                tell_fn = getattr(fileobj, "tell", None)
+                pos = tell_fn() if tell_fn else self.bytes_read
+                self._on_progress(pos, self.total_bytes, self.bytes_read)
+        elif self._on_progress and self.total_bytes > 0:
+            self._on_progress(self.total_bytes, self.total_bytes, self.bytes_read)
         return chunk
 
     def close(self) -> None:
@@ -101,10 +114,23 @@ class IngestDataset(ABC):
 
     def _open_data_stream(self) -> CountingReader:
         """Open binary stream directly from cached tsv or stream from gz archive."""
+
+        def _report(pos: int, total: int, raw_bytes: int) -> None:
+            progress_tracker.update_active_detail(
+                dataset_name=self.dataset_name,
+                stage="copying",
+                bytes_current=pos,
+                bytes_total=total,
+                uncompressed_bytes=raw_bytes,
+                detail=f"Streaming COPY into {self.staging_table}",
+            )
+
         if self.tsv_path.exists():
-            return CountingReader(open(self.tsv_path, "rb"))
+            total = self.tsv_path.stat().st_size
+            return CountingReader(open(self.tsv_path, "rb"), total_bytes=total, on_progress=_report)
         if self.gz_path.exists():
-            return CountingReader(gzip.open(self.gz_path, "rb"))
+            total = self.gz_path.stat().st_size
+            return CountingReader(gzip.open(self.gz_path, "rb"), total_bytes=total, on_progress=_report)
         raise FileNotFoundError(f"Neither {self.tsv_path} nor {self.gz_path} exists.")
 
     async def run(self) -> None:
@@ -119,7 +145,11 @@ class IngestDataset(ABC):
 
         try:
             logger.info("import started dataset=%s", self.dataset_name)
-            progress_tracker.set_stage(self.dataset_name, "downloading")
+            progress_tracker.set_stage(
+                self.dataset_name,
+                "downloading",
+                detail="Checking or downloading archive from IMDb",
+            )
             await self._download_if_needed()
 
             async with self.pool.acquire() as conn:
@@ -129,7 +159,11 @@ class IngestDataset(ABC):
                     temp_buffers = getattr(config, "IMPORT_TEMP_BUFFERS", "256MB")
                     await db_conn.execute(f"SET temp_buffers = '{temp_buffers}'")
 
-                    progress_tracker.set_stage(self.dataset_name, "copying")
+                    progress_tracker.set_stage(
+                        self.dataset_name,
+                        "copying",
+                        detail=f"Streaming COPY into {self.staging_table}",
+                    )
                     await self._drop_rebuild_indexes(db_conn)
                     async with conn.transaction():
                         await db_conn.execute("SET LOCAL synchronous_commit = off")
@@ -161,7 +195,11 @@ class IngestDataset(ABC):
                         await db_conn.execute(f"ANALYZE {self.staging_table}")
                         staging_has_rows = await db_conn.fetchval(f"SELECT EXISTS (SELECT 1 FROM {self.staging_table})")
                         logger.info("merge temporary table into final table")
-                        progress_tracker.set_stage(self.dataset_name, "merging")
+                        progress_tracker.set_stage(
+                            self.dataset_name,
+                            "merging",
+                            detail="Merging staging into final table (split upsert)",
+                        )
                         await self.merge_into_final(db_conn)
 
                         # A merge into a dependent table joins against titles/people.
@@ -175,7 +213,12 @@ class IngestDataset(ABC):
                                     "import the referenced dataset first"
                                 )
                 finally:
-                    progress_tracker.set_stage(self.dataset_name, "indexing")
+                    idx_count = len(self.REBUILD_INDEXES)
+                    progress_tracker.set_stage(
+                        self.dataset_name,
+                        "indexing",
+                        detail=f"Rebuilding {idx_count} indexes" if idx_count else "Finalizing table",
+                    )
                     await self._create_rebuild_indexes(db_conn)
 
                 if target_table:
@@ -235,9 +278,19 @@ class IngestDataset(ABC):
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(self.url) as resp:
                     resp.raise_for_status()
+                    total_bytes = resp.content_length or 0
+                    downloaded = 0
                     with open(partial_path, "wb") as f:
                         async for chunk in resp.content.iter_chunked(1024 * 1024):
                             f.write(chunk)
+                            downloaded += len(chunk)
+                            progress_tracker.update_active_detail(
+                                dataset_name=self.dataset_name,
+                                stage="downloading",
+                                bytes_current=downloaded,
+                                bytes_total=total_bytes,
+                                detail="Downloading archive from IMDb",
+                            )
             partial_path.replace(self.gz_path)
         except Exception:
             partial_path.unlink(missing_ok=True)

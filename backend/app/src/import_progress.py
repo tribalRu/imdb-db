@@ -19,6 +19,10 @@ class ImportProgress:
         self.errors: dict[str, str] = {}
         self.active_datasets: set[str] = set()
 
+        # Detailed metrics per dataset
+        self.active_details: dict[str, dict[str, Any]] = {}
+        self.stage_start_times: dict[str, float] = {}
+
     def start(self, dataset_names: list[str]) -> None:
         self.is_running = True
         self.started_at = time.time()
@@ -30,18 +34,69 @@ class ImportProgress:
         self.durations = {}
         self.errors = {}
         self.active_datasets = set()
+        self.active_details = {}
+        self.stage_start_times = {}
 
-    def set_stage(self, dataset_name: str, stage: str) -> None:
+    def set_stage(self, dataset_name: str, stage: str, detail: str = "") -> None:
         if stage in ("completed", "failed"):
             self.active_datasets.discard(dataset_name)
         else:
             self.active_datasets.add(dataset_name)
         self.stages[dataset_name] = stage
+        self.stage_start_times[f"{dataset_name}:{stage}"] = time.time()
+
+        if stage not in ("completed", "failed"):
+            self.active_details[dataset_name] = {
+                "stage": stage,
+                "detail": detail or stage,
+                "bytes_current": 0,
+                "bytes_total": 0,
+                "uncompressed_bytes": 0,
+                "percent": 0,
+                "speed_mb_s": 0.0,
+                "eta_seconds": None,
+            }
+
+    def update_active_detail(
+        self,
+        dataset_name: str,
+        stage: str,
+        bytes_current: int = 0,
+        bytes_total: int = 0,
+        uncompressed_bytes: int = 0,
+        detail: str = "",
+    ) -> None:
+        start_t = self.stage_start_times.get(f"{dataset_name}:{stage}", time.time())
+        elapsed = max(0.1, time.time() - start_t)
+
+        speed_mb_s = 0.0
+        if bytes_current > 0 and elapsed > 0.5:
+            speed_mb_s = round((bytes_current / elapsed) / (1024 * 1024), 1)
+
+        percent = 0
+        if bytes_total > 0:
+            percent = min(100, int((bytes_current / bytes_total) * 100))
+
+        eta_seconds = None
+        if speed_mb_s > 0 and bytes_total > bytes_current:
+            eta_seconds = round((bytes_total - bytes_current) / (speed_mb_s * 1024 * 1024), 1)
+
+        self.active_details[dataset_name] = {
+            "stage": stage,
+            "detail": detail or stage,
+            "bytes_current": bytes_current,
+            "bytes_total": bytes_total,
+            "uncompressed_bytes": uncompressed_bytes,
+            "percent": percent,
+            "speed_mb_s": speed_mb_s,
+            "eta_seconds": eta_seconds,
+        }
 
     def complete_dataset(self, dataset_name: str, duration: float) -> None:
         self.active_datasets.discard(dataset_name)
         self.stages[dataset_name] = "completed"
         self.durations[dataset_name] = round(duration, 2)
+        self.active_details.pop(dataset_name, None)
         self.completed_count = sum(1 for s in self.stages.values() if s == "completed")
 
     def fail_dataset(self, dataset_name: str, error: str, duration: float) -> None:
@@ -49,11 +104,13 @@ class ImportProgress:
         self.stages[dataset_name] = "failed"
         self.errors[dataset_name] = error
         self.durations[dataset_name] = round(duration, 2)
+        self.active_details.pop(dataset_name, None)
 
     def finish(self) -> None:
         self.is_running = False
         self.finished_at = time.time()
         self.active_datasets.clear()
+        self.active_details.clear()
 
     def to_dict(self) -> dict[str, Any]:
         elapsed = 0.0
@@ -76,6 +133,49 @@ class ImportProgress:
         if self.total_count > 0:
             percent = int((self.completed_count / self.total_count) * 100)
 
+        # Primary active item details
+        current_dataset = None
+        current_detail = None
+        if self.active_datasets:
+            current_dataset = sorted(list(self.active_datasets))[0]
+            current_detail = self.active_details.get(current_dataset)
+
+        # Stepper for current dataset
+        stage_steps = []
+        current_stage = self.stages.get(current_dataset, "") if current_dataset else ""
+
+        step_order = ["downloading", "copying", "merging", "indexing"]
+        step_labels = {
+            "downloading": "Download",
+            "copying": "Stream COPY",
+            "merging": "Merge / Upsert",
+            "indexing": "Index Rebuild",
+        }
+
+        current_idx = step_order.index(current_stage) if current_stage in step_order else -1
+        for idx, step_id in enumerate(step_order):
+            if current_idx > idx:
+                status = "completed"
+            elif current_idx == idx:
+                status = "running"
+            else:
+                status = "queued"
+
+            step_percent = 0
+            if status == "running" and current_detail:
+                step_percent = current_detail.get("percent", 0)
+            elif status == "completed":
+                step_percent = 100
+
+            stage_steps.append(
+                {
+                    "id": step_id,
+                    "label": step_labels[step_id],
+                    "status": status,
+                    "percent": step_percent,
+                }
+            )
+
         return {
             "is_running": self.is_running,
             "started_at": self.started_at,
@@ -85,6 +185,9 @@ class ImportProgress:
             "completed_count": self.completed_count,
             "percent": percent,
             "active_datasets": sorted(list(self.active_datasets)),
+            "current_dataset": current_dataset,
+            "current_detail": current_detail,
+            "stage_steps": stage_steps,
             "items": items,
         }
 

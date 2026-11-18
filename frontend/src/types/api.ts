@@ -43,6 +43,24 @@ export interface IngestProgressItem {
   error?: string;
 }
 
+export interface IngestProgressStageStep {
+  id: string;
+  label: string;
+  status: "queued" | "running" | "completed";
+  percent: number;
+}
+
+export interface IngestActiveDetail {
+  stage: string;
+  detail: string;
+  bytes_current: number;
+  bytes_total: number;
+  uncompressed_bytes: number;
+  percent: number;
+  speed_mb_s: number;
+  eta_seconds: number | null;
+}
+
 export interface IngestProgressData {
   is_running: boolean;
   started_at: number | null;
@@ -52,5 +70,8 @@ export interface IngestProgressData {
   completed_count: number;
   percent: number;
   active_datasets: string[];
+  current_dataset: string | null;
+  current_detail: IngestActiveDetail | null;
+  stage_steps: IngestProgressStageStep[];
   items: IngestProgressItem[];
 }

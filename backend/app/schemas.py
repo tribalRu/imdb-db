@@ -147,6 +147,28 @@ class IngestProgressItem(BaseModel):
     error: str | None = None
 
 
+class IngestProgressStageStep(BaseModel):
+    """status of a single stage step in the current dataset pipeline"""
+
+    id: str
+    label: str
+    status: str
+    percent: int = 0
+
+
+class IngestActiveDetail(BaseModel):
+    """detailed progress metrics for the currently running dataset"""
+
+    stage: str
+    detail: str
+    bytes_current: int = 0
+    bytes_total: int = 0
+    uncompressed_bytes: int = 0
+    percent: int = 0
+    speed_mb_s: float = 0.0
+    eta_seconds: float | None = None
+
+
 class IngestProgressResponse(BaseModel):
     """real-time dataset ingestion progress response"""
 
@@ -158,4 +180,7 @@ class IngestProgressResponse(BaseModel):
     completed_count: int
     percent: int
     active_datasets: list[str]
+    current_dataset: str | None = None
+    current_detail: IngestActiveDetail | None = None
+    stage_steps: list[IngestProgressStageStep] = []
     items: list[IngestProgressItem]

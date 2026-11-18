@@ -127,8 +127,55 @@ async def import_datasets(dataset_names: list[str] | None = None, force: bool = 
                 force,
             )
 
-            for ingest_class in selected_classes:
-                await ingest_class(pool=pool, force=force).run()
+            # If both independent base datasets (titles and people) are requested,
+            # run them in parallel to utilize multiple CPU cores and I/O channels.
+            tier1 = [c for c in (IngestTitleBasics, IngestNameBasics) if c in selected_classes]
+            remaining = [c for c in selected_classes if c not in tier1]
+
+            if len(tier1) > 1:
+                logger.info(
+                    "Running independent base datasets concurrently: %s",
+                    ", ".join(c.DATASET_NAME for c in tier1),
+                )
+                prefetch_task: asyncio.Task | None = None
+                if remaining:
+                    prefetch_task = asyncio.create_task(remaining[0](pool=pool, force=force)._download_if_needed())
+
+                try:
+                    await asyncio.gather(*(c(pool=pool, force=force).run() for c in tier1))
+                finally:
+                    if prefetch_task:
+                        try:
+                            await prefetch_task
+                        except Exception:
+                            logger.warning("prefetch failed", exc_info=True)
+
+                work_queue = remaining
+            else:
+                work_queue = selected_classes
+
+            prefetch_task = None
+            for idx, ingest_class in enumerate(work_queue):
+                # Trigger background prefetch for the next dataset
+                if idx + 1 < len(work_queue):
+                    next_ingest = work_queue[idx + 1](pool=pool, force=force)
+                    prefetch_task = asyncio.create_task(next_ingest._download_if_needed())
+                else:
+                    prefetch_task = None
+
+                try:
+                    await ingest_class(pool=pool, force=force).run()
+                finally:
+                    if prefetch_task:
+                        try:
+                            await prefetch_task
+                        except Exception:
+                            logger.warning(
+                                "prefetch failed for dataset=%s",
+                                work_queue[idx + 1].DATASET_NAME,
+                                exc_info=True,
+                            )
+                        prefetch_task = None
         finally:
             await pool.close()
 

@@ -123,12 +123,12 @@ finishes; tune it with `API_CACHE_ENTRIES` and `API_CACHE_TTL_SECONDS`
 
 In general, that works as such:
 
-- Download the compressed *.tsv.gz file directly from imdb, store it in the cache folder
-- Decompress the archive to *.tsv file in the cache folder
-- Import the raw data into a temporary postgres staging table
-- Upsert the staging table into the main table
+- Download the compressed `*.tsv.gz` file directly from IMDb into the cache folder
+- Stream raw binary data directly into PostgreSQL staging table via `COPY` (streaming decompression from `.gz` skips writing 10 GB of uncompressed TSVs to disk)
+- Fast split upsert: `INSERT ... WHERE NOT EXISTS` for new rows followed by targeted `UPDATE ... WHERE IS DISTINCT FROM` for changed rows (skipping 99% of unchanged rows)
+- Rebuild search indexes concurrently across connections
 
-Some testing has shown this approach to be the fastest, as that skips the ORM altogether, and all processing can be done directly in postgres. The main bottleneck will be IO on postgres during the COPY and INSERT commands.
+This approach completely bypasses the ORM, avoids Python string decoding/encoding overhead, and maximizes PostgreSQL bulk-load throughput.
 
 ### Trigger ingest for all datasets
 

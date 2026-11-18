@@ -12,6 +12,7 @@ from models import ImportTask
 from sqlalchemy import update
 from src.import_base import IngestDataset
 from src.import_name_basic import IngestNameBasics
+from src.import_progress import progress_tracker
 from src.import_title_akas import IngestTitleAkas
 from src.import_title_basic import IngestTitleBasics
 from src.import_title_episode import IngestTitleEpisodes
@@ -119,6 +120,7 @@ async def import_datasets(dataset_names: list[str] | None = None, force: bool = 
         raise ImportAlreadyRunningError("Another dataset import is already running.")
 
     async with _IMPORT_LOCK:
+        progress_tracker.start(selected_dataset_names)
         pool = await asyncpg.create_pool(dsn=config.DATABASE_URL_SYNC)
         try:
             logger.info(
@@ -178,6 +180,7 @@ async def import_datasets(dataset_names: list[str] | None = None, force: bool = 
                         prefetch_task = None
         finally:
             await pool.close()
+            progress_tracker.finish()
 
     try:
         clean_cache_dir()

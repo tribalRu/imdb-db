@@ -57,6 +57,34 @@ def test_import_lock_is_released_by_default():
     assert is_import_running() is False
 
 
+def test_import_progress_lifecycle():
+    from src.import_progress import ImportProgress
+
+    tracker = ImportProgress()
+    assert tracker.to_dict()["is_running"] is False
+
+    tracker.start(["title.basics.tsv", "title.ratings.tsv"])
+    state = tracker.to_dict()
+    assert state["is_running"] is True
+    assert state["total_count"] == 2
+    assert state["completed_count"] == 0
+    assert state["percent"] == 0
+
+    tracker.set_stage("title.basics.tsv", "copying")
+    assert "title.basics.tsv" in tracker.active_datasets
+
+    tracker.complete_dataset("title.basics.tsv", duration=12.5)
+    state = tracker.to_dict()
+    assert state["completed_count"] == 1
+    assert state["percent"] == 50
+    assert state["items"][0]["status"] == "completed"
+    assert state["items"][0]["duration"] == 12.5
+
+    tracker.finish()
+    state = tracker.to_dict()
+    assert state["is_running"] is False
+
+
 def test_normalized_query_strips_whitespace():
     class _Params:
         q = "  matrix  "

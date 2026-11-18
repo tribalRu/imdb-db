@@ -13,7 +13,7 @@ from dependencies import get_session
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
 from models import ImportTask
 from pydantic import BaseModel
-from schemas import ImportTaskOut, StatsResponse, TriggerIngestResponse
+from schemas import ImportTaskOut, IngestProgressResponse, StatsResponse, TriggerIngestResponse
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.datasets import DATASET_TABLE_MAP
@@ -24,6 +24,7 @@ from src.import_handler import (
     is_import_running,
     resolve_datasets,
 )
+from src.import_progress import progress_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,12 @@ async def trigger_ingest(
         "data_set": selected_dataset_names,
         "force": force,
     }
+
+
+@router.get("/ingest/progress", response_model=IngestProgressResponse)
+async def get_ingest_progress() -> dict[str, Any]:
+    """get real-time dataset ingestion progress"""
+    return progress_tracker.to_dict()
 
 
 @router.get("/import-tasks", response_model=list[ImportTaskOut])

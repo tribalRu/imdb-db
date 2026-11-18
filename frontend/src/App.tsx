@@ -3,6 +3,7 @@ import { AppFooter } from "./components/AppFooter";
 import { AppHeader } from "./components/AppHeader";
 import { InputArea } from "./components/InputArea";
 import { ReturnArea } from "./components/ReturnArea";
+import { IngestProgress } from "./components/IngestProgress";
 import {
   AuthRequiredScreen,
   BootErrorScreen,
@@ -250,6 +251,18 @@ function App() {
         />
 
         <main className="mx-auto grid w-full max-w-448 gap-5 px-4 py-6 lg:px-6">
+          <IngestProgress
+            token={token}
+            onIngestCompleted={() => {
+              if (
+                activeConfig.id === "stats" ||
+                activeConfig.id === "import-tasks"
+              ) {
+                void runEndpoint(activeConfig);
+              }
+            }}
+          />
+
           <InputArea
             config={activeConfig}
             values={forms[activeConfig.id] ?? {}}

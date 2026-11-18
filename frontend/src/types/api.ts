@@ -35,3 +35,22 @@ export interface EndpointResponse {
 
 export type ResponsesState = Record<string, EndpointResponse>;
 export type LoadingState = Record<string, boolean>;
+
+export interface IngestProgressItem {
+  name: string;
+  status: string;
+  duration?: number;
+  error?: string;
+}
+
+export interface IngestProgressData {
+  is_running: boolean;
+  started_at: number | null;
+  finished_at: number | null;
+  elapsed_seconds: number;
+  total_count: number;
+  completed_count: number;
+  percent: number;
+  active_datasets: string[];
+  items: IngestProgressItem[];
+}

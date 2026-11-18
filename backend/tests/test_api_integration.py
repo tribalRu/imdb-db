@@ -356,6 +356,17 @@ def test_ingest_rejects_empty_dataset_list(client):
     assert resp.status_code == 400
 
 
+def test_ingest_progress_reports_status(client):
+    resp = client.get("/api/ingest/progress")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "is_running" in data
+    assert "total_count" in data
+    assert "completed_count" in data
+    assert "percent" in data
+    assert "items" in data
+
+
 def test_stats_reports_fixture_counts(client):
     resp = client.get("/api/stats")
     assert resp.status_code == 200

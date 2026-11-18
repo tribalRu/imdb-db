@@ -18,6 +18,7 @@ from database import AsyncSessionLocal
 from models import ImportTask
 from sqlalchemy import func, select
 from src.datasets import DATASET_TABLE_MAP
+from src.import_progress import progress_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,7 @@ class IngestDataset(ABC):
 
         try:
             logger.info("import started dataset=%s", self.dataset_name)
+            progress_tracker.set_stage(self.dataset_name, "downloading")
             await self._download_if_needed()
 
             async with self.pool.acquire() as conn:
@@ -127,6 +129,7 @@ class IngestDataset(ABC):
                     temp_buffers = getattr(config, "IMPORT_TEMP_BUFFERS", "256MB")
                     await db_conn.execute(f"SET temp_buffers = '{temp_buffers}'")
 
+                    progress_tracker.set_stage(self.dataset_name, "copying")
                     await self._drop_rebuild_indexes(db_conn)
                     async with conn.transaction():
                         await db_conn.execute("SET LOCAL synchronous_commit = off")
@@ -158,6 +161,7 @@ class IngestDataset(ABC):
                         await db_conn.execute(f"ANALYZE {self.staging_table}")
                         staging_has_rows = await db_conn.fetchval(f"SELECT EXISTS (SELECT 1 FROM {self.staging_table})")
                         logger.info("merge temporary table into final table")
+                        progress_tracker.set_stage(self.dataset_name, "merging")
                         await self.merge_into_final(db_conn)
 
                         # A merge into a dependent table joins against titles/people.
@@ -171,21 +175,26 @@ class IngestDataset(ABC):
                                     "import the referenced dataset first"
                                 )
                 finally:
+                    progress_tracker.set_stage(self.dataset_name, "indexing")
                     await self._create_rebuild_indexes(db_conn)
 
                 if target_table:
                     logger.info("analyze final table table=%s", target_table)
                     await db_conn.execute(f"ANALYZE {target_table}")
 
+            duration = perf_counter() - start
+            progress_tracker.complete_dataset(self.dataset_name, duration)
             await self._finish_import_task(
                 import_task_id,
-                duration=perf_counter() - start,
+                duration=duration,
                 status="completed",
             )
-        except Exception:
+        except Exception as exc:
+            duration = perf_counter() - start
+            progress_tracker.fail_dataset(self.dataset_name, str(exc), duration)
             await self._finish_import_task(
                 import_task_id,
-                duration=perf_counter() - start,
+                duration=duration,
                 status="failed",
             )
             raise

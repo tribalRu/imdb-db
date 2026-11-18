@@ -136,3 +136,26 @@ class TriggerIngestResponse(BaseModel):
     message: str
     data_set: list[str]
     force: bool
+
+
+class IngestProgressItem(BaseModel):
+    """status of an individual dataset in an import run"""
+
+    name: str
+    status: str
+    duration: float | None = None
+    error: str | None = None
+
+
+class IngestProgressResponse(BaseModel):
+    """real-time dataset ingestion progress response"""
+
+    is_running: bool
+    started_at: float | None = None
+    finished_at: float | None = None
+    elapsed_seconds: float
+    total_count: int
+    completed_count: int
+    percent: int
+    active_datasets: list[str]
+    items: list[IngestProgressItem]

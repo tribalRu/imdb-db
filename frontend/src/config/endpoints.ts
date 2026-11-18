@@ -54,6 +54,14 @@ export const endpointConfigs: EndpointConfig[] = [
     ],
   },
   {
+    id: "ingest-progress",
+    title: "Ingest Progress",
+    method: "GET",
+    path: "/api/ingest/progress",
+    description: "Get real-time dataset ingestion progress and status.",
+    fields: [],
+  },
+  {
     id: "import-tasks",
     title: "Import Tasks",
     method: "GET",

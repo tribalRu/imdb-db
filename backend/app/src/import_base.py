@@ -153,6 +153,7 @@ class IngestDataset(ABC):
         start = perf_counter()
         import_task_id = await self._start_import_task(import_start_time)
 
+        backend_pid: int | None = None
         try:
             logger.info("import started dataset=%s", self.dataset_name)
             progress_tracker.set_stage(
@@ -164,82 +165,9 @@ class IngestDataset(ABC):
 
             async with self.pool.acquire() as conn:
                 db_conn = cast(asyncpg.Connection, conn)
+                backend_pid = db_conn.get_server_pid()
                 target_table = DATASET_TABLE_MAP.get(self.dataset_name)
-                try:
-                    temp_buffers = getattr(config, "IMPORT_TEMP_BUFFERS", "256MB")
-                    await db_conn.execute(f"SET temp_buffers = '{temp_buffers}'")
-
-                    progress_tracker.set_stage(
-                        self.dataset_name,
-                        "copying",
-                        detail=f"Streaming COPY into {self.staging_table}",
-                    )
-                    await self._drop_rebuild_indexes(db_conn)
-                    async with conn.transaction():
-                        await db_conn.execute("SET LOCAL synchronous_commit = off")
-                        work_mem = getattr(config, "IMPORT_WORK_MEM", "256MB")
-                        maint_mem = getattr(config, "IMPORT_MAINTENANCE_WORK_MEM", "2047MB")
-                        parallel_workers = getattr(config, "IMPORT_PARALLEL_WORKERS", 4)
-                        await db_conn.execute(f"SET LOCAL work_mem = '{work_mem}'")
-                        await db_conn.execute(f"SET LOCAL maintenance_work_mem = '{maint_mem}'")
-                        await db_conn.execute(f"SET LOCAL max_parallel_maintenance_workers = {parallel_workers}")
-
-                        logger.info("ingest into temporary table staging_table=%s", self.staging_table)
-                        await self.create_staging_table(db_conn)
-
-                        stream = self._open_data_stream()
-                        try:
-                            await db_conn.copy_to_table(
-                                self.staging_table,
-                                source=stream,
-                                format="csv",
-                                delimiter="\t",
-                                null="\\N",
-                                quote="\b",
-                                header=True,
-                            )
-                            self._raw_bytes_streamed = stream.bytes_read
-                        finally:
-                            stream.close()
-
-                        await db_conn.execute(f"ANALYZE {self.staging_table}")
-                        staging_has_rows = await db_conn.fetchval(f"SELECT EXISTS (SELECT 1 FROM {self.staging_table})")
-                        logger.info("merge temporary table into final table")
-                        staging_rows = (
-                            await db_conn.fetchval(
-                                f"SELECT reltuples::bigint FROM pg_class WHERE relname = '{self.staging_table}'"
-                            )
-                            or 0
-                        )
-                        progress_tracker.set_stage(
-                            self.dataset_name,
-                            "merging",
-                            detail=f"Merging staging into final table ({max(0, staging_rows):,} rows)...",
-                        )
-                        await self.merge_into_final(db_conn)
-
-                        # A merge into a dependent table joins against titles/people.
-                        # If those are missing, every row is filtered out and the
-                        # import would otherwise be recorded as a success.
-                        if staging_has_rows and target_table:
-                            target_has_rows = await db_conn.fetchval(f"SELECT EXISTS (SELECT 1 FROM {target_table})")
-                            if not target_has_rows:
-                                raise RuntimeError(
-                                    f"{self.dataset_name}: staging had rows but {target_table} stayed empty; "
-                                    "import the referenced dataset first"
-                                )
-                finally:
-                    idx_count = len(self.REBUILD_INDEXES)
-                    progress_tracker.set_stage(
-                        self.dataset_name,
-                        "indexing",
-                        detail=f"Rebuilding {idx_count} indexes" if idx_count else "Finalizing table",
-                    )
-                    await self._create_rebuild_indexes(db_conn)
-
-                if target_table:
-                    logger.info("analyze final table table=%s", target_table)
-                    await db_conn.execute(f"ANALYZE {target_table}")
+                await self._execute_import_session(db_conn, target_table)
 
             duration = perf_counter() - start
             progress_tracker.complete_dataset(self.dataset_name, duration)
@@ -248,7 +176,8 @@ class IngestDataset(ABC):
                 duration=duration,
                 status="completed",
             )
-        except Exception as exc:
+        except (asyncio.CancelledError, Exception) as exc:
+            await self._cancel_backend(backend_pid)
             duration = perf_counter() - start
             progress_tracker.fail_dataset(self.dataset_name, str(exc), duration)
             await self._finish_import_task(
@@ -268,6 +197,111 @@ class IngestDataset(ABC):
 
         if self.tsv_path.exists() and self.gz_path.exists():
             self.gz_path.unlink()
+
+    async def _cancel_backend(self, backend_pid: int | None) -> None:
+        """Cancel the backend query in PostgreSQL if the task was cancelled or aborted."""
+        if backend_pid and self.pool:
+            try:
+                async with self.pool.acquire() as cancel_conn:
+                    await cancel_conn.execute("SELECT pg_cancel_backend($1)", backend_pid)
+                    logger.info("canceled postgres backend pid=%s on task termination", backend_pid)
+            except Exception:
+                pass
+
+    async def _toggle_autovacuum(self, db_conn: asyncpg.Connection, target_table: str | None, enable: bool) -> None:
+        """Temporarily disable or re-enable autovacuum on target table during bulk load."""
+        if not target_table:
+            return
+        sql = (
+            f"ALTER TABLE {target_table} RESET (autovacuum_enabled)"
+            if enable
+            else f"ALTER TABLE {target_table} SET (autovacuum_enabled = false)"
+        )
+        try:
+            await db_conn.execute(sql)
+        except Exception:
+            pass
+
+    async def _execute_import_session(self, db_conn: asyncpg.Connection, target_table: str | None) -> None:
+        """Run the ingestion session for this dataset with optimized session settings."""
+        await db_conn.execute("SET statement_timeout = 0")
+        temp_buffers = getattr(config, "IMPORT_TEMP_BUFFERS", "256MB")
+        await db_conn.execute(f"SET temp_buffers = '{temp_buffers}'")
+
+        await self._toggle_autovacuum(db_conn, target_table, enable=False)
+        try:
+            progress_tracker.set_stage(
+                self.dataset_name,
+                "copying",
+                detail=f"Streaming COPY into {self.staging_table}",
+            )
+            await self._drop_rebuild_indexes(db_conn, target_table=target_table)
+            await self._perform_ingest(db_conn, target_table)
+        finally:
+            await self._toggle_autovacuum(db_conn, target_table, enable=True)
+            indexes_to_build = getattr(self, "discovered_indexes", self.REBUILD_INDEXES)
+            idx_count = len(indexes_to_build)
+            progress_tracker.set_stage(
+                self.dataset_name,
+                "indexing",
+                detail=f"Rebuilding {idx_count} indexes" if idx_count else "Finalizing table",
+            )
+            await self._create_rebuild_indexes(db_conn)
+
+        if target_table:
+            logger.info("analyze final table table=%s", target_table)
+            await db_conn.execute(f"ANALYZE {target_table}")
+
+    async def _perform_ingest(self, db_conn: asyncpg.Connection, target_table: str | None) -> None:
+        """Stream COPY into staging table, analyze, and merge into target table."""
+        async with db_conn.transaction():
+            await db_conn.execute("SET LOCAL synchronous_commit = off")
+            work_mem = getattr(config, "IMPORT_WORK_MEM", "256MB")
+            maint_mem = getattr(config, "IMPORT_MAINTENANCE_WORK_MEM", "2047MB")
+            parallel_workers = getattr(config, "IMPORT_PARALLEL_WORKERS", 4)
+            await db_conn.execute(f"SET LOCAL work_mem = '{work_mem}'")
+            await db_conn.execute(f"SET LOCAL maintenance_work_mem = '{maint_mem}'")
+            await db_conn.execute(f"SET LOCAL max_parallel_maintenance_workers = {parallel_workers}")
+
+            logger.info("ingest into temporary table staging_table=%s", self.staging_table)
+            await self.create_staging_table(db_conn)
+
+            stream = self._open_data_stream()
+            try:
+                await db_conn.copy_to_table(
+                    self.staging_table,
+                    source=stream,
+                    format="csv",
+                    delimiter="\t",
+                    null="\\N",
+                    quote="\b",
+                    header=True,
+                )
+                self._raw_bytes_streamed = stream.bytes_read
+            finally:
+                stream.close()
+
+            await db_conn.execute(f"ANALYZE {self.staging_table}")
+            staging_has_rows = await db_conn.fetchval(f"SELECT EXISTS (SELECT 1 FROM {self.staging_table})")
+            logger.info("merge temporary table into final table")
+            staging_rows = (
+                await db_conn.fetchval(f"SELECT reltuples::bigint FROM pg_class WHERE relname = '{self.staging_table}'")
+                or 0
+            )
+            progress_tracker.set_stage(
+                self.dataset_name,
+                "merging",
+                detail=f"Merging staging into final table ({max(0, staging_rows):,} rows)...",
+            )
+            await self.merge_into_final(db_conn)
+
+            if staging_has_rows and target_table:
+                target_has_rows = await db_conn.fetchval(f"SELECT EXISTS (SELECT 1 FROM {target_table})")
+                if not target_has_rows:
+                    raise RuntimeError(
+                        f"{self.dataset_name}: staging had rows but {target_table} stayed empty; "
+                        "import the referenced dataset first"
+                    )
 
     async def _is_already_imported(self) -> bool:
         """dataset has at least one completed import task row"""
@@ -404,15 +438,39 @@ class IngestDataset(ABC):
         """check if final target table has rows"""
         return bool(await conn.fetchval(f"SELECT NOT EXISTS (SELECT 1 FROM {table_name} LIMIT 1)"))
 
-    async def _drop_rebuild_indexes(self, conn: asyncpg.Connection) -> None:
+    async def _drop_rebuild_indexes(self, conn: asyncpg.Connection, target_table: str | None = None) -> None:
         """
         Drop indexes that are too expensive to maintain during a bulk load.
 
-        A GIN trigram index costs far more per inserted row than a sequential
-        build at the end, and the merge also updates almost every row. Dropping
-        them first turned multi-hour imports into minutes on the full dataset.
+        Discovers all non-primary-key indexes on target_table from pg_indexes
+        and combines them with self.REBUILD_INDEXES so any existing index is safely
+        dropped before the bulk load and recreated afterwards.
         """
-        for index_name, _ in self.REBUILD_INDEXES:
+        known: dict[str, str] = {idx[0]: idx[1] for idx in self.REBUILD_INDEXES}
+
+        if target_table:
+            try:
+                rows = await conn.fetch(
+                    """
+                    SELECT indexname, indexdef
+                    FROM pg_indexes
+                    WHERE schemaname = 'public'
+                      AND tablename = $1
+                      AND indexname NOT LIKE '%_pkey'
+                    """,
+                    target_table,
+                )
+                for r in rows:
+                    name = r["indexname"]
+                    defn = r["indexdef"]
+                    if name not in known:
+                        known[name] = defn
+            except Exception:
+                logger.warning("failed to query pg_indexes for table=%s", target_table, exc_info=True)
+
+        self.discovered_indexes = tuple(known.items())
+
+        for index_name, _ in self.discovered_indexes:
             logger.info("drop index before bulk load index=%s dataset=%s", index_name, self.dataset_name)
             await conn.execute(f'DROP INDEX IF EXISTS "{index_name}"')
 
@@ -519,7 +577,8 @@ class IngestDataset(ABC):
 
     async def _create_rebuild_indexes(self, conn: asyncpg.Connection) -> None:
         """Recreate the indexes dropped by `_drop_rebuild_indexes` (concurrently if multiple)."""
-        if not self.REBUILD_INDEXES:
+        indexes_to_build = getattr(self, "discovered_indexes", self.REBUILD_INDEXES)
+        if not indexes_to_build:
             progress_tracker.update_active_detail(
                 self.dataset_name,
                 stage="indexing",
@@ -531,9 +590,9 @@ class IngestDataset(ABC):
             )
             return
 
-        total_indexes = len(self.REBUILD_INDEXES)
+        total_indexes = len(indexes_to_build)
         index_items: list[dict[str, Any]] = [
-            {"name": idx, "status": "queued", "phase": None, "duration": None} for idx, _ in self.REBUILD_INDEXES
+            {"name": idx, "status": "queued", "phase": None, "duration": None} for idx, _ in indexes_to_build
         ]
 
         progress_tracker.update_active_detail(
@@ -553,11 +612,11 @@ class IngestDataset(ABC):
             if total_indexes > 1 and self.pool:
                 tasks = [
                     self._build_single_rebuild_index(idx, ddl, total_indexes, index_items)
-                    for idx, ddl in self.REBUILD_INDEXES
+                    for idx, ddl in indexes_to_build
                 ]
                 await asyncio.gather(*tasks)
             else:
-                for index_name, ddl in self.REBUILD_INDEXES:
+                for index_name, ddl in indexes_to_build:
                     await self._build_single_rebuild_index(index_name, ddl, total_indexes, index_items, conn=conn)
         finally:
             stop_event.set()

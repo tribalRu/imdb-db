@@ -8,6 +8,12 @@ class IngestTitleAkas(IngestDataset):
     """ingest dataset"""
 
     DATASET_NAME = "title.akas.tsv"
+    REBUILD_INDEXES = (
+        (
+            "ix_title_akas_title_id",
+            "CREATE INDEX IF NOT EXISTS ix_title_akas_title_id ON title_akas (title_id)",
+        ),
+    )
 
     async def create_staging_table(self, conn: asyncpg.Connection) -> None:
         await conn.execute(f"""
@@ -64,6 +70,7 @@ class IngestTitleAkas(IngestDataset):
                 s.is_original
             FROM {self.staging_table} s
             JOIN titles t ON t.tconst = s.title_id
+            ORDER BY s.title_id, s.ordering
             """,
         )
 
@@ -102,6 +109,7 @@ class IngestTitleAkas(IngestDataset):
                 SELECT 1 FROM title_akas ta
                 WHERE ta.title_id = s.title_id AND ta.ordering = s.ordering
             )
+            ORDER BY s.title_id, s.ordering
             """,
             update_sql=f"""
             UPDATE title_akas ta

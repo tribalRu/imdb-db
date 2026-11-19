@@ -65,6 +65,7 @@ class IngestTitlePrincipals(IngestDataset):
             FROM {self.staging_table} s
             JOIN titles t ON t.tconst = s.tconst
             JOIN people p ON p.nconst = s.nconst
+            ORDER BY s.tconst, s.ordering
             """,
         )
 
@@ -100,6 +101,7 @@ class IngestTitlePrincipals(IngestDataset):
                 SELECT 1 FROM title_principals tp
                 WHERE tp.tconst = s.tconst AND tp.ordering = s.ordering
             )
+            ORDER BY s.tconst, s.ordering
             """,
             update_sql=f"""
             UPDATE title_principals tp

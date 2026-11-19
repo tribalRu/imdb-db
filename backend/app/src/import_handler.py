@@ -9,7 +9,7 @@ import asyncpg
 import config
 from database import AsyncSessionLocal
 from models import ImportTask
-from sqlalchemy import update
+from sqlalchemy import text, update
 from src.import_base import IngestDataset
 from src.import_name_basic import IngestNameBasics
 from src.import_progress import progress_tracker
@@ -95,14 +95,30 @@ def clean_cache_dir():
 
 async def reconcile_stale_import_tasks() -> int:
     """
-    Mark import tasks left in `running` state by a previous process as failed.
-
-    A task is only `running` while `import_datasets` holds the process-wide
-    lock. If the process is restarted mid-import, that row would otherwise stay
-    `running` forever and hide the failure from the dashboard.
+    Mark import tasks left in `running` state by a previous process as failed
+    and terminate any orphan PostgreSQL import backends from previous crashed processes.
     """
     async with AsyncSessionLocal() as session:
         result = await session.execute(update(ImportTask).where(ImportTask.status == "running").values(status="failed"))
+        try:
+            await session.execute(text("""
+                    SELECT pg_terminate_backend(pid)
+                    FROM pg_stat_activity
+                    WHERE datname = current_database()
+                      AND pid != pg_backend_pid()
+                      AND (
+                          query ILIKE '%staging_%'
+                          OR query ILIKE '%INSERT INTO title_%'
+                          OR query ILIKE '%INSERT INTO people%'
+                          OR query ILIKE '%INSERT INTO episodes%'
+                          OR query ILIKE '%UPDATE title_%'
+                          OR query ILIKE '%UPDATE people%'
+                          OR query ILIKE '%UPDATE episodes%'
+                      )
+                """))
+        except Exception:
+            logger.warning("failed to terminate orphan postgres backends", exc_info=True)
+
         await session.commit()
         stale_count = result.rowcount or 0
 
@@ -129,6 +145,8 @@ async def import_datasets(dataset_names: list[str] | None = None, force: bool = 
                 force,
             )
 
+            import_timeout = getattr(config, "IMPORT_TIMEOUT", 6 * 3600)
+
             # If both independent base datasets (titles and people) are requested,
             # run them in parallel to utilize multiple CPU cores and I/O channels.
             tier1 = [c for c in (IngestTitleBasics, IngestNameBasics) if c in selected_classes]
@@ -144,7 +162,10 @@ async def import_datasets(dataset_names: list[str] | None = None, force: bool = 
                     prefetch_task = asyncio.create_task(remaining[0](pool=pool, force=force)._download_if_needed())
 
                 try:
-                    await asyncio.gather(*(c(pool=pool, force=force).run() for c in tier1))
+                    await asyncio.wait_for(
+                        asyncio.gather(*(c(pool=pool, force=force).run() for c in tier1)),
+                        timeout=import_timeout,
+                    )
                 finally:
                     if prefetch_task:
                         try:
@@ -166,7 +187,10 @@ async def import_datasets(dataset_names: list[str] | None = None, force: bool = 
                     prefetch_task = None
 
                 try:
-                    await ingest_class(pool=pool, force=force).run()
+                    await asyncio.wait_for(
+                        ingest_class(pool=pool, force=force).run(),
+                        timeout=import_timeout,
+                    )
                 finally:
                     if prefetch_task:
                         try:

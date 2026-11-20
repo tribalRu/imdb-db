@@ -117,6 +117,8 @@ class IngestTitlePrincipals(IngestDataset):
                     )
                 END
             FROM {self.staging_table} s
+            JOIN titles t ON t.tconst = s.tconst
+            JOIN people p ON p.nconst = s.nconst
             WHERE tp.tconst = s.tconst AND tp.ordering = s.ordering
               AND (
                 tp.nconst IS DISTINCT FROM s.nconst

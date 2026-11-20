@@ -85,6 +85,8 @@ class IngestTitleEpisodes(IngestDataset):
                 season_number = e.season_number,
                 episode_number = e.episode_number
             FROM {self.staging_table} e
+            JOIN titles t ON t.tconst = e.tconst
+            JOIN titles p ON p.tconst = e.parent_tconst
             WHERE ep.tconst = e.tconst
               AND (
                 ep.parent_tconst IS DISTINCT FROM e.parent_tconst
